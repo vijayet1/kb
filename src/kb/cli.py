@@ -28,6 +28,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -55,10 +56,10 @@ class Settings:
 
 
 SETTINGS = Settings()
-LAST_TIMINGS = {}  # loader name -> seconds, filled by load_all (shown by --debug / --doctor)
-STUCK = []  # loaders that blew the budget; their threads are abandoned, so we exit with os._exit
-WARNINGS_INFO = []  # non-fatal notices for --doctor
-WARNINGS = []  # parse problems collected here; shown by --doctor and on stderr
+LAST_TIMINGS: dict[str, float] = {}  # loader name -> seconds, filled by load_all (shown by --debug / --doctor)
+STUCK: list[str] = []  # loaders that blew the budget; their threads are abandoned, so we exit with os._exit
+WARNINGS_INFO: list[str] = []  # non-fatal notices for --doctor
+WARNINGS: list[str] = []  # parse problems collected here; shown by --doctor and on stderr
 
 # ---------------------------------------------------------------- model
 
@@ -129,11 +130,11 @@ _TOKENISH = re.compile(
 )
 
 
-def sanitize(text):
+def sanitize(text: object) -> str:
     return _CTRL.sub("", str(text))
 
 
-def redact(text):
+def redact(text: str) -> str:
     text = _SECRET.sub(lambda m: m[1] + "«redacted»", text)
     return _TOKENISH.sub("«redacted»", text)
 
@@ -159,7 +160,7 @@ class Binding:
         self.desc = redact(self.desc)
 
 
-def norm_combo(mods, key):
+def norm_combo(mods: Iterable[str], key: str) -> str:
     ms = sorted(
         {MOD_ALIAS.get(m.lower(), m.lower()) for m in mods if m},
         key=lambda m: MOD_ORDER.index(m) if m in MOD_ORDER else 9,
@@ -169,14 +170,14 @@ def norm_combo(mods, key):
     return "+".join([*ms, k])
 
 
-def pretty(norm):
+def pretty(norm: str) -> str:
     parts = norm.split("+") if not norm.endswith("++") else [*norm[:-2].split("+"), "+"]
     *mods, key = parts
     k = KEY_SYM.get(key, key.upper() if len(key) == 1 or re.fullmatch(r"f\d{1,2}", key) else key)
     return "".join(MOD_SYM.get(m, m) for m in mods) + k
 
 
-def parse_combo(text):
+def parse_combo(text: str) -> str:
     """'alt-shift-left', 'opt+t', 'shift + alt - h', '⌥t' -> normalised combo."""
     t = text.strip()
     trailing = None
@@ -201,7 +202,7 @@ def parse_combo(text):
 # ---------------------------------------------------------------- AeroSpace
 
 
-def aero_desc(cmd):
+def aero_desc(cmd: str) -> str:
     cmd = cmd.strip()
     rules = [
         (r"focus (\w+)", lambda m: f"Focus window {m[1]}"),
@@ -234,9 +235,9 @@ def aero_desc(cmd):
     return cmd
 
 
-def load_aerospace():
+def load_aerospace() -> list[Binding]:
     p = CFG / "aerospace" / "aerospace.toml"
-    out = []
+    out: list[Binding] = []
     if not p.exists():
         return out
     data = tomllib.loads(p.read_text())
@@ -268,9 +269,9 @@ def load_aerospace():
 # ---------------------------------------------------------------- skhd
 
 
-def load_skhd():
+def load_skhd() -> list[Binding]:
     p = CFG / "skhd" / "skhdrc"
-    out = []
+    out: list[Binding] = []
     if not p.exists():
         return out
     for i, line in enumerate(p.read_text().splitlines(), 1):
@@ -281,8 +282,8 @@ def load_skhd():
         lhs = lhs.strip()
         if "-" not in lhs:
             continue
-        mods, key = lhs.rsplit("-", 1)
-        mods = [m for m in re.split(r"[+\s]+", mods) if m]
+        mod_text, key = lhs.rsplit("-", 1)
+        mods = [m for m in re.split(r"[+\s]+", mod_text) if m]
         n = norm_combo(mods, key.strip())
         cmd = cmd.strip()
         m = re.match(r"open\s+-a\s+(.+)", cmd)
@@ -355,7 +356,7 @@ def tmux_key(k):
     return {"C-a": "Ctrl-A"}.get(k, k)
 
 
-def load_tmux():
+def load_tmux() -> list[Binding]:
     files = [CFG / "tmux" / "tmux.reset.conf", CFG / "tmux" / "tmux.conf", HOME / ".tmux.conf"]
     seen = set()
     out, prefix = [], "Ctrl-B"
@@ -415,9 +416,9 @@ def load_tmux():
 # ---------------------------------------------------------------- herdr
 
 
-def load_herdr():
+def load_herdr() -> list[Binding]:
     p = CFG / "herdr" / "config.toml"
-    out = []
+    out: list[Binding] = []
     if not p.exists():
         return out
     d = tomllib.loads(p.read_text())
@@ -458,8 +459,8 @@ def load_herdr():
 # ---------------------------------------------------------------- Ghostty / cmux
 
 
-def load_ghostty():
-    out = []
+def load_ghostty() -> list[Binding]:
+    out: list[Binding] = []
     for p in [CFG / "ghostty" / "config", CFG / "ghostty" / "picker.config"]:
         if not p.exists():
             continue
@@ -672,7 +673,7 @@ APPLE_SKIP = re.compile(r"(?i)\b(while|click|drag|double|press twice|hold)\b|\bo
 _PAREN_CHAR = re.compile(r"[A-Za-z ]+\(([^\w\s])\)")
 
 
-def apple_combo(text):
+def apple_combo(text: str) -> str | None:
     """Apple article notation ('Shift–Command–Question mark (?)') -> norm string, or None if not a plain key combo."""
     t = text.strip().rstrip(":").strip()
     if not t or APPLE_SKIP.search(t):
@@ -757,7 +758,7 @@ def parse_apple_html(html_text):
     return p.rows
 
 
-def _fetch(url, host):
+def _fetch(url: str, host: str) -> bytes:
     """GET url over https from exactly `host`; bounded size/time; refuses redirects to other hosts."""
     u = urllib.parse.urlparse(url)
     if u.scheme != "https" or u.hostname != host:
@@ -795,13 +796,13 @@ def _save_doc(name, url, raw, rows, min_rows, extra=None):
     return doc
 
 
-def sync_apple(url=APPLE_URL):
+def sync_apple(url: str = APPLE_URL) -> dict:
     """Fetch Apple's 'Mac keyboard shortcuts' article and store the rows (plus provenance) in DATA_DIR."""
     raw = _fetch(url, APPLE_HOST)
     return _save_doc(APPLE_JSON, url, raw, parse_apple_html(raw.decode("utf-8", "replace")), 50)
 
 
-def data_file(name):
+def data_file(name: str) -> Path:
     """Your synced copy wins; otherwise the snapshot bundled with the package."""
     for d in (DATA_DIR, BUNDLED):
         if (d / name).exists():
@@ -809,14 +810,14 @@ def data_file(name):
     return DATA_DIR / name
 
 
-def load_apple_docs():
+def load_apple_docs() -> list[Binding]:
     p = data_file(APPLE_JSON)
     if not p.exists():
         WARNINGS.append(f"apple docs: {p} missing - run `kb --sync-apple` to download Apple's shortcut list")
         return []
     doc = json.loads(p.read_text())
     meta = doc.get("meta", {})
-    out = []
+    out: list[Binding] = []
     for row in doc.get("rows", []):
         sec = row["section"].lower()
         scope = next((v for k, v in APPLE_SCOPES.items() if sec.startswith(k)), None)
@@ -897,7 +898,7 @@ def _humanize_selector(sel):
 def load_standard_key_binding(path=None):
     """Cocoa text-editing bindings straight from Apple's AppKit resource file."""
     p = Path(path) if path else STANDARD_KEY_BINDING
-    out = []
+    out: list[Binding] = []
     if not p.exists():
         return out
     d = plistlib.loads(p.read_bytes())
@@ -951,7 +952,8 @@ def live_symbolic_hotkeys():
     ]
     get.restype = ctypes.c_int
     enabled.argtypes, enabled.restype = [ctypes.c_int], ctypes.c_bool
-    res, off = {}, {}
+    res: dict[int, tuple[int, int]] = {}
+    off: dict[int, tuple[int, int]] = {}
     for i in range(1, 260):
         a, k, m = ctypes.c_uint16(), ctypes.c_uint16(), ctypes.c_uint32()
         if get(i, ctypes.byref(a), ctypes.byref(k), ctypes.byref(m)) != 0:
@@ -969,8 +971,8 @@ def _combo_of(code, flags):
     return norm_combo(mods, KEYCODES.get(code, f"keycode{code}"))
 
 
-def load_macos():
-    out = []
+def load_macos() -> list[Binding]:
+    out: list[Binding] = []
     if not DARWIN:
         return out
     live = live_symbolic_hotkeys()
@@ -990,7 +992,7 @@ def load_macos():
     else:
         enabled, disabled = live
     # name a live shortcut from (1) a verified label, else (2) Apple's article describing the same combo
-    apple_by_norm = {}
+    apple_by_norm: dict[str, str] = {}
     for d in docs:
         if d.scope in ("system", "accessibility"):
             apple_by_norm.setdefault(d.norm, d.desc.split(". ")[0].rstrip(".")[:90])
@@ -1041,7 +1043,7 @@ def _plist_with_key(path, needle, max_bytes=8_000_000):
         return None
 
 
-def _defaults(*args):
+def _defaults(*args: str) -> bytes | None:
     """Run /usr/bin/defaults with fixed arguments; stdout text, or None if it fails or times out."""
     try:
         r = subprocess.run(  # noqa: S603 - absolute path, argv built from constants, no shell
@@ -1052,9 +1054,9 @@ def _defaults(*args):
     return r.stdout if r.returncode == 0 else None
 
 
-def load_app_menu_shortcuts():
+def load_app_menu_shortcuts() -> list[Binding]:
     """Custom menu shortcuts set in System Settings > Keyboard > App Shortcuts (NSUserKeyEquivalents)."""
-    out = []
+    out: list[Binding] = []
     prefs = HOME / "Library/Preferences"
     for f in sorted(prefs.glob("*.plist")):
         d = _plist_with_key(f, b"NSUserKeyEquivalents")
@@ -1082,9 +1084,9 @@ def load_app_menu_shortcuts():
     return out
 
 
-def load_default_key_binding():
+def load_default_key_binding() -> list[Binding]:
     p = HOME / "Library/KeyBindings/DefaultKeyBinding.dict"
-    out = []
+    out: list[Binding] = []
     if not p.exists():
         return out
     try:
@@ -1102,8 +1104,8 @@ def load_default_key_binding():
     return out
 
 
-def load_rectangle():
-    out = []
+def load_rectangle() -> list[Binding]:
+    out: list[Binding] = []
     if not DARWIN:
         return out
     raw = _defaults("export", "com.knollsoft.Rectangle", "-")
@@ -1133,8 +1135,8 @@ def load_rectangle():
     return out
 
 
-def load_raycast():
-    out = []
+def load_raycast() -> list[Binding]:
+    out: list[Binding] = []
     if not DARWIN:
         return out
     raw = _defaults("read", "com.raycast.macos", "raycastGlobalHotkey")
@@ -1183,7 +1185,7 @@ VSC_ARROWS = {
 VSC_MODS = {"⌃": "ctrl", "⌥": "alt", "⇧": "shift", "⌘": "cmd"}
 
 
-def vsc_mac_chord(text):
+def vsc_mac_chord(text: str) -> list[str] | None:
     """VS Code's mac notation ('⇧⌘P', '⌘K ⌘C', '⌃Tab') -> [norm, ...] (one entry per chord step), or None."""
     steps = []
     for tok in text.split():
@@ -1198,7 +1200,7 @@ def vsc_mac_chord(text):
     return steps or None
 
 
-def vsc_key(text):
+def vsc_key(text: str) -> list[str]:
     """keybindings.json notation ('cmd+k cmd+c', 'ctrl+shift+/') -> [norm, ...]. 'meta/win/super' mean cmd on mac."""
     steps = []
     for tok in text.strip().split():
@@ -1209,7 +1211,7 @@ def vsc_key(text):
     return steps
 
 
-def vsc_display(steps):
+def vsc_display(steps: Iterable[str]) -> str:
     return " ".join(pretty(x) for x in steps)
 
 
@@ -1269,13 +1271,13 @@ def vscode_installed_version():
         return ""
 
 
-def sync_vscode(url=VSC_URL):
+def sync_vscode(url: str = VSC_URL) -> dict:
     raw = _fetch(url, VSC_HOST)
     rows = parse_vscode_html(raw.decode("utf-8", "replace"))
     return _save_doc(VSC_JSON, url, raw, rows, 100, {"installed_vscode": vscode_installed_version()})
 
 
-def strip_jsonc(text):
+def strip_jsonc(text: str) -> str:
     """Remove // and /* */ comments and trailing commas without touching string contents."""
     out, i, n, in_str = [], 0, len(text), False
     while i < n:
@@ -1316,8 +1318,8 @@ def _nls(ext_dir, value):
         return value
 
 
-def load_vscode():
-    out = []
+def load_vscode() -> list[Binding]:
+    out: list[Binding] = []
     docs = data_file(VSC_JSON)
     meta = {}
     removed = set()  # (command, chord) pairs the user removed with a "-command" entry
@@ -1332,15 +1334,15 @@ def load_vscode():
         except ValueError as e:
             WARNINGS.append(f"vscode: cannot parse {f}: {e}")
             continue
-        for e in entries if isinstance(entries, list) else []:
-            if not isinstance(e, dict) or "key" not in e or "command" not in e:
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict) or "key" not in entry or "command" not in entry:
                 continue
-            steps = vsc_key(str(e["key"]))
-            cmd = str(e["command"])
+            steps = vsc_key(str(entry["key"]))
+            cmd = str(entry["command"])
             if cmd.startswith("-"):
                 removed.add((cmd[1:], tuple(steps)))
                 continue
-            when = f"  when: {e['when']}" if e.get("when") else ""
+            when = f"  when: {entry['when']}" if entry.get("when") else ""
             out.append(
                 Binding(
                     "vscode",
@@ -1361,21 +1363,21 @@ def load_vscode():
         for r in d.get("rows", []):
             if not r.get("osx"):
                 continue
-            steps = vsc_mac_chord(r["osx"])
-            if not steps:
+            chord = vsc_mac_chord(r["osx"])
+            if not chord:
                 continue
             b = Binding(
                 "vscode",
-                vsc_display(steps),
+                vsc_display(chord),
                 r["title"],
-                steps[0] if len(steps) == 1 else "",
+                chord[0] if len(chord) == 1 else "",
                 "vscode",
                 r["command"],
                 f"{meta.get('source', VSC_URL)} (fetched {meta.get('fetched_at', '?')[:10]})",
                 f"vscode default {r['section']}",
                 f"VS Code default: {r['section']}",
             )
-            if (r["command"], tuple(steps)) in removed:
+            if (r["command"], tuple(chord)) in removed:
                 b.note = "removed by your keybindings.json"
             out.append(b)
     else:
@@ -1400,25 +1402,24 @@ def load_vscode():
                 for c in (pkg.get("contributes") or {}).get("commands", [])
                 if isinstance(c, dict)
             }
-            ext = pkg.get("displayName") or pkg.get("name") or pj.parent.name
-            ext = _nls(pj.parent, ext)
-            for e in kbs:
-                if not isinstance(e, dict):
+            ext = str(_nls(pj.parent, pkg.get("displayName") or pkg.get("name") or pj.parent.name))
+            for entry in kbs:
+                if not isinstance(entry, dict):
                     continue
-                key = e.get("mac") or e.get("key")
-                cmd = e.get("command")
-                if not key or not cmd:
+                key = entry.get("mac") or entry.get("key")
+                command = entry.get("command")
+                if not key or not command:
                     continue
                 steps = vsc_key(str(key))
-                when = f"  when: {e['when']}" if e.get("when") else ""
+                when = f"  when: {entry['when']}" if entry.get("when") else ""
                 out.append(
                     Binding(
                         "vscode",
                         vsc_display(steps),
-                        f"{titles.get(cmd) or cmd}{when}",
+                        f"{titles.get(command) or command}{when}",
                         steps[0] if len(steps) == 1 else "",
                         "vscode",
-                        str(cmd),
+                        str(command),
                         str(pj),
                         f"vscode extension {ext}",
                         f"extension: {ext}",
@@ -1427,8 +1428,8 @@ def load_vscode():
     return out
 
 
-def load_zsh():
-    out = []
+def load_zsh() -> list[Binding]:
+    out: list[Binding] = []
     for p in [HOME / ".dotfiles/zsh/.zshrc", HOME / ".zshrc"]:
         if not p.exists():
             continue
@@ -1465,7 +1466,7 @@ LOADERS = [
 ]
 
 
-def load_all(debug=False):
+def load_all(debug: bool = False) -> list[Binding]:
     """Run every source concurrently, each bounded by LOADER_BUDGET, so one stalled read can never hang kb."""
     results, timings = {}, {}
 
@@ -1498,7 +1499,7 @@ def load_all(debug=False):
                 f"{fn.__name__[5:]}: no answer after {LOADER_BUDGET:g}s - skipped "
                 f"(slow disk, security scanner or a stalled system call; KB_LOADER_TIMEOUT=60 waits longer)"
             )
-    out = []
+    out: list[Binding] = []
     for fn in LOADERS:  # stable order regardless of which thread finished first
         out += results.get(fn.__name__, [])
     LAST_TIMINGS.clear()
@@ -1523,7 +1524,7 @@ MOD_WORDS = {
 _DISPLAY_MODS = (("⌃", "ctrl"), ("⌥", "alt"), ("⇧", "shift"), ("⌘", "cmd"))
 
 
-def mods_of(b):
+def mods_of(b: Binding) -> set[str]:
     """Modifier keys a binding uses. Works for single combos, chords (⌘K ⌘C) and tmux-style display text."""
     if b.norm:
         return set(b.norm.split("+")[:-1]) & set(MOD_WORDS)
@@ -1535,25 +1536,25 @@ def mods_of(b):
     return found
 
 
-def keys_text(b):
+def keys_text(b: Binding) -> str:
     """Everything that describes the key combo itself - never the description."""
     aliases = " ".join(MOD_WORDS[m] for m in sorted(mods_of(b)))
     return f"{b.keys} {b.norm} {aliases}".lower()
 
 
-def name_text(b):
+def name_text(b: Binding) -> str:
     """What the binding does: description plus the underlying command."""
     return f"{b.desc} {b.raw}".lower()
 
 
-def haystack(b):
+def haystack(b: Binding) -> str:
     return f"{b.tool} {keys_text(b)} {name_text(b)} {b.scope} {b.tags}".lower()
 
 
 SEARCH_TEXT = {"all": haystack, "keys": keys_text, "name": name_text}
 
 
-def parse_mods(spec):
+def parse_mods(spec: str) -> list[str]:
     """'command', 'opt,shift', '⌘⇧' -> canonical modifier names; raises ValueError for unknown words."""
     names, spec = [], spec.strip()
     for sym, name in _DISPLAY_MODS:
@@ -1601,18 +1602,18 @@ GLOBAL_TOOLS = {"aerospace", "skhd", "rectangle", "raycast", "macos"}
 APP_SCOPES = {"app", "text", "vscode"}
 
 
-def conflicts(items):
+def conflicts(items: list[Binding]) -> dict[tuple[str, str], list[Binding]]:
     """Two live global bindings on one combo. Returns {(scope, combo): [Binding, ...]}."""
-    groups = {}
+    groups: dict[tuple[str, str], list[Binding]] = {}
     for b in items:
         if b.norm and (b.scope == "global" or b.scope.startswith("mode:")):
             groups.setdefault((b.scope, b.norm), []).append(b)
     return {k: v for k, v in groups.items() if len(v) > 1}
 
 
-def shadows(items):
+def shadows(items: list[Binding]) -> list[tuple[Binding, list[Binding]]]:
     """A global hotkey you added that swallows a standard in-app macOS shortcut."""
-    std = {}
+    std: dict[str, list[Binding]] = {}
     for b in items:
         if b.tool == "macos" and b.scope in APP_SCOPES and b.norm:
             std.setdefault(b.norm, []).append(b)
@@ -1630,7 +1631,7 @@ def shadows(items):
 # ---------------------------------------------------------------- output
 
 
-def C(code, s):  # noqa: N802 - tiny colour helper, kept short on purpose
+def C(code: str, s: str) -> str:  # noqa: N802 - tiny colour helper, kept short on purpose
     return f"\033[{code}m{s}\033[0m" if SETTINGS.color else s
 
 
@@ -1648,7 +1649,7 @@ TOOL_COLOR = {
 }
 
 
-def row(b, kw=None, tw=None):
+def row(b: Binding, kw: int | None = None, tw: int | None = None) -> str:
     t = C(TOOL_COLOR.get(b.tool, "37"), f"{b.tool:<{tw or 9}}")
     k = C("1", f"{b.keys:<{kw or 14}}")
     ctx = (
@@ -1659,7 +1660,7 @@ def row(b, kw=None, tw=None):
     return f"{t}  {k}  {d}{ctx}{warn}"
 
 
-def print_table(items):
+def print_table(items: list[Binding]) -> None:
     if not items:
         print("No bindings match.", file=sys.stderr)
         return
@@ -1669,7 +1670,7 @@ def print_table(items):
     print(C("2", f"\n{len(items)} binding{'s' if len(items) != 1 else ''}"))
 
 
-def detail(b, items):
+def detail(b: Binding, items: list[Binding]) -> str:
     lines = [f"{b.tool}  ·  {b.keys}", "", b.desc, "", f"scope   {b.scope}", f"command {b.raw}", f"source  {b.src}"]
     if b.note:
         lines.append(f"note    {b.note}")
@@ -1679,7 +1680,7 @@ def detail(b, items):
     return "\n".join(lines)
 
 
-def report_conflicts(items):
+def report_conflicts(items: list[Binding]) -> int:
     """Print findings; return number of cross-tool conflicts (the ones worth failing a check on)."""
     cs, sh = conflicts(items), shadows(items)
     hard = 0
@@ -1702,7 +1703,7 @@ def _meta_line(meta, what):
     return f"{meta.get('rows', '?')} {what} from {meta.get('source')} fetched {meta.get('fetched_at', '?')[:10]}"
 
 
-def doctor(items):
+def doctor(items: list[Binding]) -> int:
     """Which sources exist, how many bindings each produced, and what failed to parse."""
     srcs = {
         "aerospace": CFG / "aerospace/aerospace.toml",
@@ -1712,7 +1713,7 @@ def doctor(items):
         "ghostty": CFG / "ghostty/config",
         "zsh": HOME / ".zshrc",
     }
-    counts = {}
+    counts: dict[str, int] = {}
     for b in items:
         counts[b.tool] = counts.get(b.tool, 0) + 1
     print(f"kb {VERSION}  python {sys.version.split()[0]}  platform {sys.platform}\n")
@@ -1740,7 +1741,7 @@ def doctor(items):
     return 1 if WARNINGS else 0
 
 
-def interactive(items):
+def interactive(items: list[Binding]) -> None:
     fzf = shutil.which("fzf")
     if not fzf:
         print_table(items)
@@ -1796,7 +1797,7 @@ def _mod_arg(value):
         raise argparse.ArgumentTypeError(str(e)) from None
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="kb",
         description="Browse and search all keybindings.",
@@ -1873,7 +1874,7 @@ def main(argv=None):
     if a.doctor:
         return doctor(items)
     if a.tools:
-        counts = {}
+        counts: dict[str, int] = {}
         for b in items:
             counts[b.tool] = counts.get(b.tool, 0) + 1
         for t, n in sorted(counts.items()):
@@ -1898,7 +1899,7 @@ def main(argv=None):
     return 0 if res else 1
 
 
-def run():
+def run() -> None:
     """Console-script entry point (uv/pip install) and `python -m kb`."""
     code = 0
     try:

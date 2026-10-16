@@ -1,6 +1,7 @@
 """Pure-logic tests for scripts/release.py (the end-to-end run is exercised against a throwaway clone by hand)."""
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -55,6 +56,55 @@ class Changelog(unittest.TestCase):
 
     def test_unreleased_as_last_section(self):
         self.assertEqual(release.unreleased_body("## [Unreleased]\n\n- only\n"), "- only")
+
+
+class Rollback(unittest.TestCase):
+    """If any step after the first file edit fails, the release files are restored and nothing is half-released."""
+
+    def setUp(self):
+        self.calls = []
+        self.saved_run, self.saved_root = release.run, release.ROOT
+        self.tmp = tempfile.TemporaryDirectory()
+        release.ROOT = Path(self.tmp.name)  # apply_release writes CHANGELOG.md: never let tests touch the real one
+
+    def tearDown(self):
+        release.run, release.ROOT = self.saved_run, self.saved_root
+        self.tmp.cleanup()
+
+    def fake_run(self, fail_on):
+        def run(*cmd, capture=False):
+            self.calls.append(cmd)
+            if fail_on in cmd:
+                raise release.ReleaseError(f"boom on {fail_on}")
+            return "kb 9.9.9" if capture else ""
+
+        release.run = run
+
+    def restored(self):
+        return ("git", "checkout", "--", "pyproject.toml", "uv.lock", "CHANGELOG.md") in self.calls
+
+    def test_failure_while_tagging_restores_files(self):
+        self.fake_run("tag")
+        with self.assertRaises(release.ReleaseError):
+            release.apply_release("9.9.9", "# changelog", "notes")
+        self.assertTrue(self.restored())
+
+    def test_version_mismatch_restores_files_and_never_commits(self):
+        self.fake_run("never")  # run() works, but `kb --version` returns 'kb 9.9.9' != 'kb 1.0.0'
+        with self.assertRaises(release.ReleaseError) as ctx:
+            release.apply_release("1.0.0", "# changelog", "notes")
+        self.assertIn("expected 'kb 1.0.0'", str(ctx.exception))
+        self.assertTrue(self.restored())
+        self.assertFalse(any(c[:2] == ("git", "commit") for c in self.calls))
+
+    def test_success_commits_then_tags_with_notes(self):
+        self.fake_run("never")
+        release.apply_release("9.9.9", "# changelog", "the notes")
+        tag = next(c for c in self.calls if c[:3] == ("git", "tag", "-a"))
+        self.assertEqual(tag[3], "v9.9.9")
+        self.assertIn("the notes", tag[-1])
+        self.assertFalse(self.restored())
+        self.assertEqual((release.ROOT / "CHANGELOG.md").read_text(), "# changelog")  # written to the sandbox
 
 
 if __name__ == "__main__":

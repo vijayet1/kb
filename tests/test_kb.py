@@ -352,7 +352,7 @@ class VSCode(Sandbox):
         saved = kb.HOME
         kb.HOME = self.home
         try:
-            got = kb.load_vscode()
+            got = kb.load_vscode() + kb.load_vscode_extensions()
         finally:
             kb.HOME = saved
         by = {(b.keys, b.raw): b for b in got}
@@ -492,6 +492,127 @@ class SearchModes(unittest.TestCase):
         )
         self.assertEqual(r.returncode, 2)
         self.assertIn("unknown modifier", r.stderr)
+
+
+class VSCodeExtensionCache(Sandbox):
+    """Extensions come from VS Code's own manifest caches: 2 reads per profile, not ~140 package.json opens."""
+
+    def setUp(self):
+        super().setUp()
+        self.profile = kb.VSC_USER.parent / "CachedProfilesData" / "__default__profile__"
+        self.profile.mkdir(parents=True)
+
+    def cache(self, name, extensions):
+        (self.profile / name).write_text(json.dumps({"input": {}, "result": extensions}))
+
+    @staticmethod
+    def ext(name, display, kbs, commands=()):
+        return {
+            "identifier": {"id": name},
+            "manifest": {
+                "name": name,
+                "displayName": display,
+                "contributes": {"keybindings": kbs, "commands": list(commands)},
+            },
+        }
+
+    def test_reads_cache_prefers_localized_and_dedupes_profiles(self):
+        e = self.ext(
+            "thing",
+            "Thing",
+            [{"command": "t.run", "key": "ctrl+r", "mac": "cmd+r", "when": "editorFocus"}],
+            [{"command": "t.run", "title": "Run Thing"}],
+        )
+        self.cache("extensions.user.en.cache", [e])
+        self.cache("extensions.user.cache", [self.ext("other", "Other", [{"command": "o", "key": "cmd+o"}])])  # ignored
+        other = kb.VSC_USER.parent / "CachedProfilesData" / "work"
+        other.mkdir()
+        (other / "extensions.user.en.cache").write_text(json.dumps({"result": [e]}))  # same extension, 2nd profile
+        got = kb.load_vscode_extensions()
+        self.assertEqual([(b.keys, b.desc) for b in got], [("⌘R", "Run Thing  when: editorFocus")])
+        self.assertIn("extension: Thing", got[0].note)
+
+    def test_unresolved_nls_titles_fall_back_to_command_id(self):
+        self.cache(
+            "extensions.builtin.en.cache",
+            [
+                self.ext(
+                    "x",
+                    "%x.name%",
+                    [{"command": "x.go", "key": "cmd+g"}],
+                    [{"command": "x.go", "title": "%x.go.title%"}],
+                )
+            ],
+        )
+        got = kb.load_vscode_extensions()
+        self.assertEqual(got[0].desc, "x.go")
+        self.assertIn("extension: x", got[0].note)
+
+    def test_corrupt_cache_warns_and_does_not_fall_back_to_scanning(self):
+        (self.profile / "extensions.user.en.cache").write_text("{not json")
+        self.assertEqual(kb.load_vscode_extensions(), [])
+        self.assertTrue(any("cannot read extension cache" in w for w in kb.WARNINGS))
+
+    def test_no_cache_falls_back_to_package_json_scan_with_a_note(self):
+        for f in self.profile.iterdir():
+            f.unlink()
+        self.profile.rmdir()
+        (kb.VSC_USER.parent / "CachedProfilesData").rmdir()
+        ext = kb.HOME / ".vscode/extensions/acme.thing-1.0"
+        ext.mkdir(parents=True)
+        (ext / "package.json").write_text(
+            json.dumps({"name": "thing", "contributes": {"keybindings": [{"command": "t.run", "key": "cmd+k"}]}})
+        )
+        got = kb.load_vscode_extensions()
+        self.assertEqual([b.keys for b in got], ["⌘K"])
+        self.assertTrue(any("package.json" in w for w in kb.WARNINGS_INFO))
+
+
+class ToolScopedLoading(Sandbox):
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+        self.saved_loaders = kb.LOADERS
+
+        def make(name):
+            def fn():
+                self.calls.append(name)
+                return [kb.Binding(name, "k", "d")]
+
+            fn.__name__ = f"load_{name}"
+            return fn
+
+        kb.LOADERS = [make("tmux"), make("vscode"), make("vscode_extensions"), make("macos")]
+        kb.LOADER_TOOL = {"load_vscode_extensions": "vscode"}
+
+    def tearDown(self):
+        kb.LOADERS = self.saved_loaders
+        kb.LOADER_TOOL = {"load_vscode_extensions": "vscode"}
+        super().tearDown()
+
+    def test_only_requested_sources_are_read(self):
+        items = kb.load_all(tools=["tmux"])
+        self.assertEqual(self.calls, ["tmux"])
+        self.assertEqual([b.tool for b in items], ["tmux"])
+
+    def test_one_tool_can_own_several_loaders(self):
+        kb.load_all(tools=["VSCode"])  # case-insensitive
+        self.assertEqual(sorted(self.calls), ["vscode", "vscode_extensions"])
+
+    def test_no_filter_reads_everything(self):
+        kb.load_all()
+        self.assertEqual(len(self.calls), 4)
+
+    def test_known_tools_are_unique_tool_names(self):
+        self.assertEqual(kb.known_tools(), ["macos", "tmux", "vscode"])
+
+    def test_cli_rejects_unknown_tool_with_choices(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "kb", "-t", "emacs"], capture_output=True, text=True, timeout=30, check=False
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("unknown tool 'emacs'", r.stderr)
+        self.assertIn("vscode", r.stderr)
 
 
 class CLI(unittest.TestCase):

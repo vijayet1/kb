@@ -38,7 +38,7 @@ try:
 except ModuleNotFoundError:  # Python < 3.11; pip/uv enforce requires-python, this covers running the file directly
     sys.exit(f"kb: needs Python 3.11+ (found {sys.version.split()[0]}); try: brew install python")
 
-VERSION = "1.5.1"
+VERSION = "1.6.0"
 SCHEMA_VERSION = 1
 HOME = Path.home()
 CFG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
@@ -1382,9 +1382,90 @@ def load_vscode() -> list[Binding]:
             out.append(b)
     else:
         WARNINGS.append(f"vscode: {docs} missing - run `kb --sync-vscode` to download VS Code's default shortcuts")
-    # 3) extensions installed on this machine (built-in + user): contributes.keybindings
-    roots = [VSC_APP / "Contents/Resources/app/extensions", HOME / ".vscode/extensions"]
-    for root in roots:
+    return out
+
+
+def _extension_bindings(pkg: dict, source: str, ext_dir: Path | None) -> list[Binding]:
+    """Keybindings an extension contributes. `ext_dir` (when known) lets %nls% titles resolve from disk."""
+
+    def text(value: object) -> str:
+        if ext_dir is not None:
+            return str(_nls(ext_dir, value))
+        return "" if str(value or "").startswith("%") else str(value or "")
+
+    contributes = pkg.get("contributes") or {}
+    kbs = contributes.get("keybindings") or []
+    if isinstance(kbs, dict):
+        kbs = [kbs]
+    titles = {
+        c.get("command"): text(c.get("title", "")) for c in contributes.get("commands", []) if isinstance(c, dict)
+    }
+    ext = text(pkg.get("displayName")) or str(pkg.get("name") or "extension")
+    out: list[Binding] = []
+    for entry in kbs:
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("mac") or entry.get("key")
+        command = entry.get("command")
+        if not key or not command:
+            continue
+        steps = vsc_key(str(key))
+        when = f"  when: {entry['when']}" if entry.get("when") else ""
+        out.append(
+            Binding(
+                "vscode",
+                vsc_display(steps),
+                f"{titles.get(command) or command}{when}",
+                steps[0] if len(steps) == 1 else "",
+                "vscode",
+                str(command),
+                source,
+                f"vscode extension {ext}",
+                f"extension: {ext}",
+            )
+        )
+    return out
+
+
+def _vscode_manifest_caches() -> list[Path]:
+    """VS Code's own per-profile caches of every extension manifest (built-in + user), one file each."""
+    found: list[Path] = []
+    base = VSC_USER.parent / "CachedProfilesData"
+    if not base.is_dir():
+        return found
+    for profile in sorted(p for p in base.iterdir() if p.is_dir()):
+        for kind in ("builtin", "user"):
+            en, plain = profile / f"extensions.{kind}.en.cache", profile / f"extensions.{kind}.cache"
+            found += [f for f in (en, plain) if f.exists()][:1]  # localized (titles resolved) wins
+    return found
+
+
+def load_vscode_extensions() -> list[Binding]:
+    """Extension keybindings. Reads VS Code's manifest caches (2 files per profile) instead of opening ~140
+    package.json files: far fewer reads, and endpoint-security scanners make every extra open expensive."""
+    out: list[Binding] = []
+    seen: set[tuple[str, str, str]] = set()
+    caches = _vscode_manifest_caches()
+    for cache in caches:
+        try:
+            if cache.stat().st_size > 30_000_000:
+                continue
+            result = json.loads(cache.read_text()).get("result", [])
+        except (OSError, ValueError):
+            WARNINGS.append(f"vscode: cannot read extension cache {cache}")
+            continue
+        for item in result:
+            if not isinstance(item, dict) or not isinstance(item.get("manifest"), dict):
+                continue
+            for b in _extension_bindings(item["manifest"], str(cache), None):
+                ident = (b.tags, b.raw, b.keys + b.desc)
+                if ident not in seen:
+                    seen.add(ident)
+                    out.append(b)
+    if caches:
+        return out
+    WARNINGS_INFO.append("vscode: extension cache not found; reading each extension's package.json (slower)")
+    for root in (VSC_APP / "Contents/Resources/app/extensions", HOME / ".vscode/extensions"):
         if not root.is_dir():
             continue
         for pj in sorted(root.glob("*/package.json")):
@@ -1394,37 +1475,7 @@ def load_vscode() -> list[Binding]:
                 pkg = json.loads(pj.read_text())
             except (OSError, ValueError):
                 continue
-            kbs = (pkg.get("contributes") or {}).get("keybindings") or []
-            if isinstance(kbs, dict):
-                kbs = [kbs]
-            titles = {
-                c.get("command"): _nls(pj.parent, c.get("title", ""))
-                for c in (pkg.get("contributes") or {}).get("commands", [])
-                if isinstance(c, dict)
-            }
-            ext = str(_nls(pj.parent, pkg.get("displayName") or pkg.get("name") or pj.parent.name))
-            for entry in kbs:
-                if not isinstance(entry, dict):
-                    continue
-                key = entry.get("mac") or entry.get("key")
-                command = entry.get("command")
-                if not key or not command:
-                    continue
-                steps = vsc_key(str(key))
-                when = f"  when: {entry['when']}" if entry.get("when") else ""
-                out.append(
-                    Binding(
-                        "vscode",
-                        vsc_display(steps),
-                        f"{titles.get(command) or command}{when}",
-                        steps[0] if len(steps) == 1 else "",
-                        "vscode",
-                        str(command),
-                        str(pj),
-                        f"vscode extension {ext}",
-                        f"extension: {ext}",
-                    )
-                )
+            out += _extension_bindings(pkg, str(pj), pj.parent)
     return out
 
 
@@ -1462,12 +1513,27 @@ LOADERS = [
     load_macos,
     load_raycast,
     load_vscode,
+    load_vscode_extensions,
     load_zsh,
 ]
+# loaders whose tool name differs from their function name
+LOADER_TOOL = {"load_vscode_extensions": "vscode"}
 
 
-def load_all(debug: bool = False) -> list[Binding]:
-    """Run every source concurrently, each bounded by LOADER_BUDGET, so one stalled read can never hang kb."""
+def loader_tool(fn) -> str:
+    return LOADER_TOOL.get(fn.__name__, fn.__name__[5:])
+
+
+def known_tools() -> list[str]:
+    return sorted({loader_tool(fn) for fn in LOADERS})
+
+
+def load_all(debug: bool = False, tools: Iterable[str] | None = None) -> list[Binding]:
+    """Run the needed sources concurrently, each bounded by LOADER_BUDGET, so one stalled read can never hang kb.
+
+    `tools` limits which sources are read at all (e.g. `-t tmux` never touches VS Code or macOS)."""
+    wanted = {t.lower() for t in tools} if tools else None
+    loaders = [fn for fn in LOADERS if wanted is None or loader_tool(fn) in wanted]
     results, timings = {}, {}
 
     def work(fn):
@@ -1478,7 +1544,7 @@ def load_all(debug: bool = False) -> list[Binding]:
             WARNINGS.append(f"{fn.__name__[5:]}: {type(e).__name__}: {e}")
         timings[fn.__name__] = time.monotonic() - t0
 
-    threads = [(fn, threading.Thread(target=work, args=(fn,), daemon=True)) for fn in LOADERS]
+    threads = [(fn, threading.Thread(target=work, args=(fn,), daemon=True)) for fn in loaders]
     t_start = time.monotonic()
     for _, t in threads:
         t.start()
@@ -1500,7 +1566,7 @@ def load_all(debug: bool = False) -> list[Binding]:
                 f"(slow disk, security scanner or a stalled system call; KB_LOADER_TIMEOUT=60 waits longer)"
             )
     out: list[Binding] = []
-    for fn in LOADERS:  # stable order regardless of which thread finished first
+    for fn in loaders:  # stable order regardless of which thread finished first
         out += results.get(fn.__name__, [])
     LAST_TIMINGS.clear()
     LAST_TIMINGS.update(timings)
@@ -1790,6 +1856,13 @@ def show_detail(idx, snapshot):
         print(detail(items[idx], items))
 
 
+def _tool_arg(value):
+    tool = value.strip().lower()
+    if tool not in known_tools():
+        raise argparse.ArgumentTypeError(f"unknown tool {value!r} (choose from: {', '.join(known_tools())})")
+    return tool
+
+
 def _mod_arg(value):
     try:
         return parse_mods(value)
@@ -1806,7 +1879,14 @@ def main(argv: list[str] | None = None) -> int:
         + "\nexit codes: 0 ok · 1 no match / conflicts found / doctor warnings · 2 usage error",
     )
     ap.add_argument("query", nargs="*", help="words that must all match")
-    ap.add_argument("-t", "--tool", action="append", help="only this tool (repeatable)")
+    ap.add_argument(
+        "-t",
+        "--tool",
+        action="append",
+        type=_tool_arg,
+        metavar="TOOL",
+        help="only this tool, and only read its sources (repeatable; see --tools)",
+    )
     ap.add_argument("-k", "--key", help="look up a key combo, e.g. opt+t, 'alt-shift-h', ⌘⇧p")
     ap.add_argument(
         "-m",
@@ -1870,7 +1950,9 @@ def main(argv: list[str] | None = None) -> int:
                 rc = 1
         return rc
     SETTINGS.include_unnamed = a.all_system
-    items = load_all(debug=a.debug)
+    # only a plain search can skip sources; --doctor/--tools/-c compare or count everything
+    scoped = None if (a.doctor or a.tools or a.conflicts) else a.tool
+    items = load_all(debug=a.debug, tools=scoped)
     if a.doctor:
         return doctor(items)
     if a.tools:

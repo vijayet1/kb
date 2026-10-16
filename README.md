@@ -49,10 +49,25 @@ runs it anywhere without cloning. Check an install with `kb --version` and `kb -
 Quality gates: ruff (rules E,F,W,B,UP,SIM,S,C4,PIE,RET,PL,RUF,PTH,ARG,TRY,A,N,I; config and the few justified ignores in
 `pyproject.toml`), `ruff format`, and mypy with `check_untyped_defs`. The package ships `py.typed`.
 
+Troubleshooting a slow or "hanging" run: `kb --debug` prints per-source timings; `kb --doctor` flags slow sources.
+Each source is bounded by `KB_LOADER_TIMEOUT` (default 10 s) and skipped with a warning if it stalls. Endpoint-security
+tools (e.g. Microsoft Defender for Endpoint) scan every file a *new process* opens, which can make a source that opens
+many small files take seconds; `kb` therefore reads as few files as possible (see below). If it still stalls, ask your
+admin to exclude the `kb` tool environment (`~/.local/share/uv/tools/kb`) from real-time scanning.
+
 Layout: `src/kb/cli.py` (the tool) · `src/kb/data/` (bundled snapshots) · `tests/` · `pyproject.toml` (uv_build
 backend) + `uv.lock` · `.python-version` (3.12 for development; the code supports 3.11+).
 
 ## How it works
+
+- **Only what a query needs is read.** `kb -t tmux ...` reads just the tmux config (about 60 ms); `-t vscode` reads
+  VS Code's sources only. Plain searches, `-k`, `-m`, `-c` and `--doctor` read everything because they compare or
+  count across tools. Unknown `-t` names are rejected with the list of valid tools.
+- **VS Code extensions come from VS Code's own manifest cache** (`~/Library/Application Support/Code/CachedProfilesData/*/
+  extensions.{builtin,user}.*.cache`, titles already localized): two files per profile instead of opening ~140
+  `package.json` files. If the cache is missing, `kb` falls back to scanning the manifests and says so in `--doctor`.
+- Sources run concurrently and independently (`vscode` defaults/your keybindings and `vscode` extensions are separate
+  sources), so one slow read cannot hide the rest.
 
 Sources: AeroSpace, skhd, tmux, herdr, Ghostty, Rectangle, Raycast (global hotkey), macOS system/standard/app
 shortcuts, VS Code, zsh bindkey. Add a source = write `load_x() -> [Binding]` and append it to `LOADERS`.

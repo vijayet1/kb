@@ -46,6 +46,20 @@ runs it anywhere without cloning. Check an install with `kb --version` and `kb -
     uv run kb ...      # run from the checkout
     just sync          # refresh data and update the snapshot bundled in src/kb/data/
 
+Versioning and releases: [SemVer](https://semver.org/) (features bump minor, fixes/tooling bump patch), with the
+version stored only in `pyproject.toml` (the code reads it from there, or from installed package metadata). History is in
+[CHANGELOG.md](CHANGELOG.md) (Keep a Changelog) and every release has an annotated `vX.Y.Z` git tag. The `--json`
+output has its own `schema_version`, bumped only when that output breaks.
+
+    # 1. describe the change under "## [Unreleased]" in CHANGELOG.md and commit it
+    just release-dry minor   # preview: new version + release notes, changes nothing
+    just release minor       # or: make release LEVEL=minor   (patch | minor | major | X.Y.Z)
+
+`release` refuses to run unless the tree is clean, you are on `main`, the tag is new and `[Unreleased]` is not empty. It
+then runs lint, type-check and tests, bumps the version with `uv version`, promotes the changelog section, commits
+`release: vX.Y.Z` and creates the annotated tag (restoring the files if any step fails). It never pushes; do
+`git push && git push --tags` yourself.
+
 Quality gates: ruff (rules E,F,W,B,UP,SIM,S,C4,PIE,RET,PL,RUF,PTH,ARG,TRY,A,N,I; config and the few justified ignores in
 `pyproject.toml`), `ruff format`, and mypy with `check_untyped_defs`. The package ships `py.typed`.
 

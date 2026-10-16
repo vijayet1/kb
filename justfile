@@ -11,14 +11,22 @@ test:
 
 # lint, format check and type-check (what CI would run)
 lint:
-    uv run ruff check src tests
-    uv run ruff format --check src tests
-    uv run mypy src
+    uv run ruff check src tests scripts
+    uv run ruff format --check src tests scripts
+    uv run mypy src scripts
 
 # apply formatter and safe lint fixes
 fmt:
-    uv run ruff format src tests
-    uv run ruff check --fix src tests
+    uv run ruff format src tests scripts
+    uv run ruff check --fix src tests scripts
+
+# cut a release: level is patch | minor | major | X.Y.Z (checks, bump, changelog, commit, tag; never pushes)
+release level:
+    uv run python scripts/release.py {{level}}
+
+# show what a release would do without changing anything
+release-dry level:
+    uv run python scripts/release.py {{level}} --dry-run
 
 # lint + tests
 check: lint test

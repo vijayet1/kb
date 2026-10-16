@@ -22,7 +22,7 @@ dev = ["ruff>=0.17", "mypy>=1.13"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-src = ["src", "tests"]
+src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "UP", "SIM", "S", "C4", "PIE", "RET", "PL", "RUF", "PTH", "ARG", "TRY", "A", "N", "I"]
@@ -34,6 +34,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S", "PLC0415", "ARG", "PTH", "N"]
+"scripts/*" = ["S603", "S607"]  # release helper shells out to git/uv with fixed arguments
 
 [tool.mypy]
 python_version = "3.11"

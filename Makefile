@@ -1,10 +1,13 @@
-.PHONY: test install uninstall sync lock doctor
+.PHONY: test install install-release uninstall sync lock doctor
 
 test:               ## run the unit tests in an isolated uv-managed env
 	uv run python -m unittest discover -s tests -v
 
 install:            ## install `kb` onto PATH as a uv tool (editable: repo edits apply immediately)
 	uv tool install --editable --force .
+
+install-release:    ## install a regular (non-editable) copy
+	uv tool install --force .
 
 uninstall:
 	uv tool uninstall kb

@@ -1,24 +1,46 @@
 # kb — keybinding browser
 
-Python is managed with [uv](https://docs.astral.sh/uv/) (no runtime dependencies; Python >= 3.11, pinned to 3.12 in
-`.python-version`).
-
-    make install    # uv tool install --editable . -> `kb` on your PATH (~/.local/bin)
-    make test       # uv run python -m unittest ...  (isolated env, 37 tests)
-    make sync       # refresh Apple + VS Code data and update the snapshot bundled in src/kb/data/
-    uv run kb ...   # run from the repo without installing
-    uvx --from git+<repo-url> kb ...   # run anywhere without cloning
-
-Layout: `src/kb/cli.py` (tool) · `src/kb/data/` (bundled Apple + VS Code snapshots, used until you run `kb --sync`,
-which writes your own copy to `~/.local/share/kb/`) · `tests/` · `pyproject.toml` + `uv.lock`.
-
-Reads your live configs and answers "what does this key do / who owns it".
-Read-only: it never writes to any config. `fzf` is optional.
+Reads your live configs and answers "what does this key do, and who owns it?" across AeroSpace, skhd, tmux, herdr,
+Ghostty, Rectangle, Raycast, macOS, VS Code and zsh. Read-only: it never writes to any config.
 
     kb                 interactive browser        kb -k opt+t     who owns this combo
     kb tmux split      search (all words match)   kb -c           conflicts + shadowed shortcuts
     kb -t skhd         one tool                   kb --doctor     sources found / parse warnings
-    kb --json          schema_version 1           make test
+    kb --json          schema_version 1           kb --sync       refresh Apple + VS Code data
+
+## Install
+
+Requirements: Python 3.11+ (stdlib only, no runtime dependencies). `fzf` is optional and enables the interactive
+browser. The macOS sources (system shortcuts, Rectangle, Raycast) are skipped on other platforms; the rest work
+anywhere.
+
+Pick whichever tool you already use — all of them install the same `kb` command:
+
+| Tool | Install | Run without installing | Uninstall |
+|---|---|---|---|
+| **uv** (recommended) | `uv tool install .` | `uvx --from . kb` | `uv tool uninstall kb` |
+| **pipx** | `pipx install .` | `pipx run --spec . kb` | `pipx uninstall kb` |
+| **pip** | `pip install .` (use a venv) | `python -m kb` after installing | `pip uninstall kb` |
+| **just** | `just install` (editable) or `just install-release` | `just --list` shows all recipes | `just uninstall` |
+| **make** | `make install` (editable) or `make install-release` | | `make uninstall` |
+
+`just` and `make` are thin wrappers over uv with identical recipes (`test`, `install`, `install-release`,
+`uninstall`, `sync`, `lock`, `doctor`), so use either. Once the repo has a remote, `uvx --from git+<repo-url> kb`
+runs it anywhere without cloning. Check an install with `kb --version` and `kb --doctor`.
+
+`kb` ships with a snapshot of Apple's and VS Code's default shortcuts, so it works immediately after install.
+`kb --sync` downloads fresh copies into `~/.local/share/kb/` (yours win over the bundled snapshot).
+
+## Develop
+
+    just test          # or: make test  — isolated uv env, 37 tests
+    uv run kb ...      # run from the checkout
+    just sync          # refresh data and update the snapshot bundled in src/kb/data/
+
+Layout: `src/kb/cli.py` (the tool) · `src/kb/data/` (bundled snapshots) · `tests/` · `pyproject.toml` (uv_build
+backend) + `uv.lock` · `.python-version` (3.12 for development; the code supports 3.11+).
+
+## How it works
 
 Sources: AeroSpace, skhd, tmux, herdr, Ghostty, Rectangle, Raycast (global hotkey), macOS system/standard/app
 shortcuts, VS Code, zsh bindkey. Add a source = write `load_x() -> [Binding]` and append it to `LOADERS`.

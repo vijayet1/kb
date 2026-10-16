@@ -1,13 +1,10 @@
-"""Run: python3 -m unittest discover -s ~/.dotfiles/kb/tests -v"""
+"""Run: uv run python -m unittest discover -s tests -v   (or: make test)"""
 import sys
 sys.dont_write_bytecode = True
-import importlib.machinery, importlib.util, json, os, stat, subprocess, sys, tempfile, textwrap, unittest
+import json, os, stat, subprocess, sys, tempfile, textwrap, unittest
 from pathlib import Path
 
-KB = Path(__file__).resolve().parents[1] / "bin/kb"
-loader = importlib.machinery.SourceFileLoader("kb", str(KB))
-kb = importlib.util.module_from_spec(importlib.util.spec_from_loader("kb", loader))
-loader.exec_module(kb)
+import kb.cli as kb
 
 
 class Sandbox(unittest.TestCase):
@@ -18,7 +15,8 @@ class Sandbox(unittest.TestCase):
         self.home = Path(self.tmp.name)
         self.cfg = self.home / ".config"
         self.cfg.mkdir()
-        self.saved = (kb.HOME, kb.CFG, kb.DARWIN, list(kb.WARNINGS), kb.DATA_DIR, kb.VSC_APP, kb.VSC_USER)
+        self.saved = (kb.HOME, kb.CFG, kb.DARWIN, list(kb.WARNINGS), kb.DATA_DIR, kb.VSC_APP, kb.VSC_USER, kb.BUNDLED)
+        kb.BUNDLED = self.home / "no-bundled-data"
         kb.VSC_APP, kb.VSC_USER = self.home / "VSCode.app", self.home / "Code/User"
         kb.DATA_DIR = self.home / ".local/share/kb"
         kb.HOME, kb.CFG, kb.DARWIN = self.home, self.cfg, False
@@ -27,7 +25,7 @@ class Sandbox(unittest.TestCase):
     def tearDown(self):
         kb.HOME, kb.CFG, kb.DARWIN = self.saved[:3]
         kb.WARNINGS[:] = self.saved[3]
-        kb.DATA_DIR, kb.VSC_APP, kb.VSC_USER = self.saved[4:7]
+        kb.DATA_DIR, kb.VSC_APP, kb.VSC_USER, kb.BUNDLED = self.saved[4:8]
         self.tmp.cleanup()
 
     def write(self, rel, text):
@@ -315,7 +313,7 @@ class VSCode(Sandbox):
 class CLI(unittest.TestCase):
     def run_kb(self, *args, env=None):
         e = dict(os.environ, NO_COLOR="1", **(env or {}))
-        return subprocess.run([sys.executable, str(KB), *args], capture_output=True, text=True, env=e, timeout=30)
+        return subprocess.run([sys.executable, "-m", "kb", *args], capture_output=True, text=True, env=e, timeout=30)
 
     def test_exit_codes(self):
         self.assertEqual(self.run_kb("--version").returncode, 0)
@@ -328,6 +326,27 @@ class CLI(unittest.TestCase):
             data = json.loads(r.stdout)
             self.assertEqual(data["schema_version"], kb.SCHEMA_VERSION)
             self.assertIsInstance(data["bindings"], list)
+
+
+class Packaging(Sandbox):
+    def test_version_matches_pyproject(self):
+        import tomllib
+        pp = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        self.assertEqual(tomllib.loads(pp.read_text())["project"]["version"], kb.VERSION)
+
+    def test_no_runtime_dependencies(self):
+        import tomllib
+        pp = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        self.assertEqual(tomllib.loads(pp.read_text())["project"]["dependencies"], [])
+
+    def test_bundled_snapshot_is_used_until_synced(self):
+        real = Path(kb.__file__).resolve().parent / "data"
+        self.assertTrue((real / kb.APPLE_JSON).exists() and (real / kb.VSC_JSON).exists())
+        kb.BUNDLED = real
+        self.assertEqual(kb.data_file(kb.APPLE_JSON), real / kb.APPLE_JSON)
+        kb.DATA_DIR.mkdir(parents=True)
+        (kb.DATA_DIR / kb.APPLE_JSON).write_text("{}")
+        self.assertEqual(kb.data_file(kb.APPLE_JSON), kb.DATA_DIR / kb.APPLE_JSON)  # user copy wins
 
 
 if __name__ == "__main__":

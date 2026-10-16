@@ -1,10 +1,19 @@
 # kb — keybinding browser
 
-    make install    # symlinks bin/kb into ~/.local/bin and seeds ~/.local/share/kb with the bundled data
-    make test       # 34 unit tests, stdlib only
+Python is managed with [uv](https://docs.astral.sh/uv/) (no runtime dependencies; Python >= 3.11, pinned to 3.12 in
+`.python-version`).
+
+    make install    # uv tool install --editable . -> `kb` on your PATH (~/.local/bin)
+    make test       # uv run python -m unittest ...  (isolated env, 37 tests)
+    make sync       # refresh Apple + VS Code data and update the snapshot bundled in src/kb/data/
+    uv run kb ...   # run from the repo without installing
+    uvx --from git+<repo-url> kb ...   # run anywhere without cloning
+
+Layout: `src/kb/cli.py` (tool) · `src/kb/data/` (bundled Apple + VS Code snapshots, used until you run `kb --sync`,
+which writes your own copy to `~/.local/share/kb/`) · `tests/` · `pyproject.toml` + `uv.lock`.
 
 Reads your live configs and answers "what does this key do / who owns it".
-Read-only: it never writes to any config. Needs Python 3.11+ (stdlib only); `fzf` is optional.
+Read-only: it never writes to any config. `fzf` is optional.
 
     kb                 interactive browser        kb -k opt+t     who owns this combo
     kb tmux split      search (all words match)   kb -c           conflicts + shadowed shortcuts
@@ -30,7 +39,7 @@ macOS shortcuts: where each comes from (nothing is typed in from memory)
   and anything still unnamed is hidden unless `--all-system`.
 - Standard shortcuts (⌘C, Finder, text, accessibility): Apple Support "Mac keyboard shortcuts"
   (https://support.apple.com/en-us/102650), downloaded with `kb --sync-apple` into
-  `~/.local/share/kb/apple-shortcuts.json` (a copy is committed in `data/`, with source URL, fetch time and SHA-256).
+  `~/.local/share/kb/apple-shortcuts.json` (a snapshot is bundled in `src/kb/data/`, with source URL, fetch time and SHA-256).
   Refresh it when a new macOS ships; it refuses to overwrite on a layout change (<50 rows) or a non-Apple host.
 - Cocoa text editing: Apple's own `AppKit.framework/Resources/StandardKeyBinding.dict`.
 - Your changes: custom App Shortcuts (`NSUserKeyEquivalents`) and `~/Library/KeyBindings/DefaultKeyBinding.dict`.

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """kb - browse and search every keybinding on this Mac, read live from your configs.
 
   kb                   interactive fuzzy browser (fzf), falls back to a full list
@@ -18,7 +17,7 @@ import argparse, json, os, plistlib, re, shlex, shutil, subprocess, tempfile, to
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 SCHEMA_VERSION = 1
 HOME = Path.home()
 CFG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
@@ -397,6 +396,7 @@ APPLE_HOST = "support.apple.com"
 APPLE_MAX_BYTES = 5_000_000
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share") / "kb"
 APPLE_JSON = "apple-shortcuts.json"
+BUNDLED = Path(__file__).resolve().parent / "data"  # snapshot shipped with the package; used until you run --sync
 STANDARD_KEY_BINDING = Path("/System/Library/Frameworks/AppKit.framework/Resources/StandardKeyBinding.dict")
 
 # Apple's article headings -> where the shortcut applies. "system" mixes Finder and OS-wide entries, so it is
@@ -532,8 +532,16 @@ def sync_apple(url=APPLE_URL):
     return _save_doc(APPLE_JSON, url, raw, parse_apple_html(raw.decode("utf-8", "replace")), 50)
 
 
+def data_file(name):
+    """Your synced copy wins; otherwise the snapshot bundled with the package."""
+    for d in (DATA_DIR, BUNDLED):
+        if (d / name).exists():
+            return d / name
+    return DATA_DIR / name
+
+
 def load_apple_docs():
-    p = DATA_DIR / APPLE_JSON
+    p = data_file(APPLE_JSON)
     if not p.exists():
         WARNINGS.append(f"apple docs: {p} missing - run `kb --sync-apple` to download Apple's shortcut list")
         return []
@@ -923,7 +931,7 @@ def _nls(ext_dir, value):
 
 def load_vscode():
     out = []
-    docs = DATA_DIR / VSC_JSON
+    docs = data_file(VSC_JSON)
     meta = {}
     removed = set()  # (command, chord) pairs the user removed with a "-command" entry
     # 1) your own keybindings (default profile + named profiles)
@@ -1161,11 +1169,11 @@ def doctor(items):
         print(f"  {t:<10} {state}  {counts.get(t, 0):>3} bindings  {C('2', str(p) if p else '')}")
     for w in WARNINGS:
         print(f"  {C('31', 'warning')}  {w}")
-    ap_meta = DATA_DIR / APPLE_JSON
+    ap_meta = data_file(APPLE_JSON)
     if ap_meta.exists():
         m = json.loads(ap_meta.read_text()).get("meta", {})
         print(f"  {C('2', 'apple')}    {m.get('rows', '?')} rows from {m.get('source')} fetched {m.get('fetched_at', '?')[:10]}")
-    vm = DATA_DIR / VSC_JSON
+    vm = data_file(VSC_JSON)
     if vm.exists():
         m = json.loads(vm.read_text()).get("meta", {})
         inst = vscode_installed_version()
@@ -1279,10 +1287,15 @@ def main(argv=None):
     return 0 if res else 1
 
 
-if __name__ == "__main__":
+def run():
+    """Console-script entry point (uv/pip install) and `python -m kb`."""
     try:
         sys.exit(main())
     except BrokenPipeError:
         sys.exit(0)
     except KeyboardInterrupt:
         sys.exit(130)
+
+
+if __name__ == "__main__":
+    run()

@@ -1,7 +1,18 @@
-.PHONY: test install install-release uninstall sync lock doctor
+.PHONY: lint fmt check test install install-release uninstall sync lock doctor
 
 test:               ## run the unit tests in an isolated uv-managed env
 	uv run python -m unittest discover -s tests -v
+
+lint:               ## ruff check + format check + mypy
+	uv run ruff check src tests
+	uv run ruff format --check src tests
+	uv run mypy src
+
+fmt:                ## apply formatter and safe lint fixes
+	uv run ruff format src tests
+	uv run ruff check --fix src tests
+
+check: lint test    ## lint + tests
 
 install:            ## install `kb` onto PATH as a uv tool (editable: repo edits apply immediately)
 	uv tool install --editable --force .

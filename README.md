@@ -40,9 +40,14 @@ runs it anywhere without cloning. Check an install with `kb --version` and `kb -
 
 ## Develop
 
-    just test          # or: make test  — isolated uv env, 37 tests
+    just check         # or: make check — ruff + ruff format --check + mypy, then the tests
+    just test          # or: make test  — isolated uv env, 46 tests
+    just fmt           # apply formatter and safe lint fixes
     uv run kb ...      # run from the checkout
     just sync          # refresh data and update the snapshot bundled in src/kb/data/
+
+Quality gates: ruff (rules E,F,W,B,UP,SIM,S,C4,PIE,RET,PL,RUF,PTH,ARG,TRY,A,N,I; config and the few justified ignores in
+`pyproject.toml`), `ruff format`, and mypy with `check_untyped_defs`. The package ships `py.typed`.
 
 Layout: `src/kb/cli.py` (the tool) · `src/kb/data/` (bundled snapshots) · `tests/` · `pyproject.toml` (uv_build
 backend) + `uv.lock` · `.python-version` (3.12 for development; the code supports 3.11+).

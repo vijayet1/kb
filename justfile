@@ -9,6 +9,20 @@ default:
 test:
     uv run python -m unittest discover -s tests -v
 
+# lint, format check and type-check (what CI would run)
+lint:
+    uv run ruff check src tests
+    uv run ruff format --check src tests
+    uv run mypy src
+
+# apply formatter and safe lint fixes
+fmt:
+    uv run ruff format src tests
+    uv run ruff check --fix src tests
+
+# lint + tests
+check: lint test
+
 # install `kb` onto PATH as a uv tool (editable: repo edits apply immediately)
 install:
     uv tool install --editable --force .

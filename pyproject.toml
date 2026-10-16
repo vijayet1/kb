@@ -1,6 +1,6 @@
 [project]
 name = "kb"
-version = "1.5.0"
+version = "1.5.1"
 description = "Browse and search every keybinding on your machine, read live from your configs"
 readme = "README.md"
 requires-python = ">=3.11"

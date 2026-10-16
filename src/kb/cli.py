@@ -38,7 +38,7 @@ try:
 except ModuleNotFoundError:  # Python < 3.11; pip/uv enforce requires-python, this covers running the file directly
     sys.exit(f"kb: needs Python 3.11+ (found {sys.version.split()[0]}); try: brew install python")
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 SCHEMA_VERSION = 1
 HOME = Path.home()
 CFG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")

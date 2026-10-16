@@ -77,5 +77,3 @@ changes only when that output breaks.
   (Microsoft defaults, your keybindings, extensions) and zsh.
 - Conflict and shadow detection (`-c`), fzf browser, `--json` (schema 1), `--doctor`, `--sync*` downloads with host
   allow-listing, secret redaction and terminal-escape stripping of config text.
-
-[Unreleased]: https://example.invalid/kb/compare/v1.6.0...HEAD

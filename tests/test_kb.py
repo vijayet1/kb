@@ -1,9 +1,12 @@
 """Run: uv run python -m unittest discover -s tests -v   (or: make test)"""
 
+import json
+import os
+import subprocess
 import sys
-
-sys.dont_write_bytecode = True
-import json, os, stat, subprocess, sys, tempfile, textwrap, unittest
+import tempfile
+import textwrap
+import unittest
 from pathlib import Path
 
 import kb.cli as kb
@@ -281,13 +284,17 @@ class KeyBindingDict(Sandbox):
         self.assertEqual(kb.shadows([std, mine]), [])
 
 
-VSC_HTML = """
-<h2 id="basic">Basic Editing</h2><table><thead><tr><th>Command</th><th>Key</th><th>Command id</th></tr></thead><tbody>
-<tr><td>Cut line</td><td><span class="dynamic-keybinding" data-commandId="editor.action.clipboardCutAction" data-osx="⌘X" data-win="Ctrl+X"><span class="keybinding">⌘X</span></span></td><td><code>editor.action.clipboardCutAction</code></td></tr>
-<tr><td>Comment <b>line</b></td><td><span class="dynamic-keybinding" data-commandId="c.comment" data-osx="⌘K ⌘C" data-win="Ctrl+K Ctrl+C">x</span></td><td><code>c.comment</code></td></tr>
-<tr><td>No key</td><td></td><td><code>c.nokey</code></td></tr>
-</tbody></table>
-"""
+VSC_HTML = (
+    '<h2 id="basic">Basic Editing</h2><table><thead><tr><th>Command</th><th>Key</th>'
+    "<th>Command id</th></tr></thead><tbody>\n"
+    '<tr><td>Cut line</td><td><span class="dynamic-keybinding" data-commandId="editor.action.clipboardCutAction" '
+    'data-osx="⌘X" data-win="Ctrl+X"><span class="keybinding">⌘X</span></span></td>'
+    "<td><code>editor.action.clipboardCutAction</code></td></tr>\n"
+    '<tr><td>Comment <b>line</b></td><td><span class="dynamic-keybinding" data-commandId="c.comment" '
+    'data-osx="⌘K ⌘C" data-win="Ctrl+K Ctrl+C">x</span></td><td><code>c.comment</code></td></tr>\n'
+    "<tr><td>No key</td><td></td><td><code>c.nokey</code></td></tr>\n"
+    "</tbody></table>\n"
+)
 
 
 class VSCode(Sandbox):
@@ -351,7 +358,7 @@ class VSCode(Sandbox):
         by = {(b.keys, b.raw): b for b in got}
         self.assertEqual(by[("⌘X", "editor.action.clipboardCutAction")].note, "removed by your keybindings.json")
         self.assertIn("⌘K ⌘C", {b.keys for b in got})
-        self.assertEqual([b for b in got if b.raw == "c.comment"][0].norm, "")  # chord: never single-combo compared
+        self.assertEqual(next(b for b in got if b.raw == "c.comment").norm, "")  # chord: never single-combo compared
         mine = by[("⌃⌥T", "workbench.action.terminal.toggleTerminal")]
         self.assertIn("when: editorFocus", mine.desc)
         e = by[("⇧⌘R", "thing.run")]  # 'mac' key wins over 'key'; nls titles resolved
@@ -384,7 +391,10 @@ class Watchdog(Sandbox):
             return []
 
         hang.__name__ = "load_hang"
-        ok = lambda: [kb.Binding("t", "k", "d")]
+
+        def ok():
+            return [kb.Binding("t", "k", "d")]
+
         ok.__name__ = "load_ok"
         saved = (kb.LOADERS, kb.LOADER_BUDGET, list(kb.STUCK))
         kb.LOADERS, kb.LOADER_BUDGET = [hang, ok], 0.4
@@ -408,7 +418,10 @@ class Watchdog(Sandbox):
             return [kb.Binding("first", "k", "d")]
 
         slow.__name__ = "load_slow"
-        fast = lambda: [kb.Binding("second", "k", "d")]
+
+        def fast():
+            return [kb.Binding("second", "k", "d")]
+
         fast.__name__ = "load_fast"
         saved = kb.LOADERS
         kb.LOADERS = [slow, fast]
@@ -423,6 +436,7 @@ class Watchdog(Sandbox):
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
         )
         self.assertRegex(r.stderr, r"kb: \w+\s+\d+ ms")
 
@@ -473,7 +487,9 @@ class SearchModes(unittest.TestCase):
         self.assertEqual(kb.search(self.items, ["alt"], by="keys"), [self.opt_p])
 
     def test_cli_rejects_unknown_modifier(self):
-        r = subprocess.run([sys.executable, "-m", "kb", "-m", "hyper"], capture_output=True, text=True, timeout=30)
+        r = subprocess.run(
+            [sys.executable, "-m", "kb", "-m", "hyper"], capture_output=True, text=True, timeout=30, check=False
+        )
         self.assertEqual(r.returncode, 2)
         self.assertIn("unknown modifier", r.stderr)
 
@@ -481,7 +497,9 @@ class SearchModes(unittest.TestCase):
 class CLI(unittest.TestCase):
     def run_kb(self, *args, env=None):
         e = dict(os.environ, NO_COLOR="1", **(env or {}))
-        return subprocess.run([sys.executable, "-m", "kb", *args], capture_output=True, text=True, env=e, timeout=30)
+        return subprocess.run(
+            [sys.executable, "-m", "kb", *args], capture_output=True, text=True, env=e, timeout=30, check=False
+        )
 
     def test_exit_codes(self):
         self.assertEqual(self.run_kb("--version").returncode, 0)

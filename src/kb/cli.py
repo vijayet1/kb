@@ -11,14 +11,31 @@ kb --tools           list sources and how many bindings each has
 kb --json            machine-readable output
 """
 
+import argparse
+import contextlib
+import ctypes
+import hashlib
+import json
+import os
+import plistlib
+import re
+import shlex
+import shutil
+import subprocess
 import sys
-
-if sys.version_info < (3, 11):
-    sys.exit(f"kb: needs Python 3.11+ (found {sys.version.split()[0]}); try: brew install python")
-
-import argparse, json, os, plistlib, re, shlex, shutil, subprocess, tempfile, tomllib
-from dataclasses import dataclass, asdict
+import tempfile
+import threading
+import time
+import urllib.parse
+import urllib.request
+from dataclasses import asdict, dataclass, field
+from html.parser import HTMLParser
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11; pip/uv enforce requires-python, this covers running the file directly
+    sys.exit(f"kb: needs Python 3.11+ (found {sys.version.split()[0]}); try: brew install python")
 
 VERSION = "1.5.0"
 SCHEMA_VERSION = 1
@@ -27,6 +44,17 @@ CFG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
 DARWIN = sys.platform == "darwin"
 DEFAULTS_BIN = "/usr/bin/defaults"  # absolute: never resolve system tools through $PATH
 LOADER_BUDGET = float(os.environ.get("KB_LOADER_TIMEOUT", "10"))  # seconds any one source may take
+
+
+@dataclass
+class Settings:
+    """Process-wide switches set once from the command line (attribute assignment, not `global`)."""
+
+    color: bool = field(default_factory=lambda: sys.stdout.isatty() and "NO_COLOR" not in os.environ)
+    include_unnamed: bool = False  # --all-system
+
+
+SETTINGS = Settings()
 LAST_TIMINGS = {}  # loader name -> seconds, filled by load_all (shown by --debug / --doctor)
 STUCK = []  # loaders that blew the budget; their threads are abandoned, so we exit with os._exit
 WARNINGS_INFO = []  # non-fatal notices for --doctor
@@ -138,11 +166,11 @@ def norm_combo(mods, key):
     )
     k = key.lower()
     k = KEY_ALIAS.get(k, k)
-    return "+".join(ms + [k])
+    return "+".join([*ms, k])
 
 
 def pretty(norm):
-    parts = norm.split("+") if not norm.endswith("++") else norm[:-2].split("+") + ["+"]
+    parts = norm.split("+") if not norm.endswith("++") else [*norm[:-2].split("+"), "+"]
     *mods, key = parts
     k = KEY_SYM.get(key, key.upper() if len(key) == 1 or re.fullmatch(r"f\d{1,2}", key) else key)
     return "".join(MOD_SYM.get(m, m) for m in mods) + k
@@ -163,7 +191,7 @@ def parse_combo(text):
         toks.append(trailing)
     if not toks:
         return ""
-    mods = [x for x in toks[:-1]]
+    mods = list(toks[:-1])
     last = toks[-1]
     if last.lower() in MOD_ALIAS and len(toks) == 1:
         return MOD_ALIAS[last.lower()]
@@ -180,21 +208,21 @@ def aero_desc(cmd):
         (r"move (\w+)", lambda m: f"Move window {m[1]}"),
         (r"join-with (\w+)", lambda m: f"Join with window {m[1]}"),
         (r"resize smart ([+-]?\d+)", lambda m: f"Resize window ({m[1]})"),
-        (r"balance-sizes", lambda m: "Balance window sizes"),
-        (r"flatten-workspace-tree", lambda m: "Flatten workspace tree"),
-        (r"layout floating tiling", lambda m: "Toggle floating / tiling"),
+        (r"balance-sizes", lambda _: "Balance window sizes"),
+        (r"flatten-workspace-tree", lambda _: "Flatten workspace tree"),
+        (r"layout floating tiling", lambda _: "Toggle floating / tiling"),
         (r"layout (.+)", lambda m: f"Switch layout: {m[1]}"),
-        (r"workspace-back-and-forth", lambda m: "Jump to previous workspace"),
+        (r"workspace-back-and-forth", lambda _: "Jump to previous workspace"),
         (r"workspace (\S+)", lambda m: f"Go to workspace {m[1]}"),
         (
             r"move-node-to-workspace (\S+)( --focus-follows-window)?",
             lambda m: f"Send window to workspace {m[1]}" + (" and follow" if m[2] else ""),
         ),
-        (r"move-workspace-to-monitor.*", lambda m: "Move workspace to next monitor"),
-        (r"move-node-to-monitor.*", lambda m: "Move window to next monitor"),
+        (r"move-workspace-to-monitor.*", lambda _: "Move workspace to next monitor"),
+        (r"move-node-to-monitor.*", lambda _: "Move window to next monitor"),
         (r"mode (\w+)", lambda m: f"Enter '{m[1]}' mode" if m[1] != "main" else "Back to main mode"),
-        (r"reload-config", lambda m: "Reload AeroSpace config"),
-        (r"close-all-windows-but-current", lambda m: "Close all windows except current"),
+        (r"reload-config", lambda _: "Reload AeroSpace config"),
+        (r"close-all-windows-but-current", lambda _: "Close all windows except current"),
         (r"exec-and-forget\s+open\s+-na?\s+(.+)", lambda m: f"Open new instance: {m[1].split(' --args')[0]}"),
         (r"exec-and-forget\s+open\s+-a\s+(.+)", lambda m: f"Open {m[1].strip(chr(34) + chr(39))}"),
         (r"exec-and-forget\s+(.+)", lambda m: f"Run script: {Path(m[1].split()[0]).name}"),
@@ -220,7 +248,7 @@ def load_aerospace():
             desc = " → ".join(descs) if descs else "Back to main mode"
             if len(cl) > 1 and cl[-1] == "mode main":
                 desc += "  (then back to main)"
-            lineno = next((i + 1 for i, l in enumerate(lines) if re.match(rf"\s*{re.escape(key)}\s*=", l)), 0)
+            lineno = next((i + 1 for i, ln in enumerate(lines) if re.match(rf"\s*{re.escape(key)}\s*=", ln)), 0)
             n = parse_combo(key)
             out.append(
                 Binding(
@@ -595,7 +623,6 @@ SYSTEM_HOTKEY_NAMES = {
     184: "Screenshot and recording options",
     190: "Quick Note",
 }
-INCLUDE_UNNAMED = False  # set by --all-system
 
 APPLE_URL = "https://support.apple.com/en-us/102650"
 APPLE_HOST = "support.apple.com"
@@ -650,7 +677,6 @@ def apple_combo(text):
     t = text.strip().rstrip(":").strip()
     if not t or APPLE_SKIP.search(t):
         return None
-    keys = []
     t = _PAREN_CHAR.sub(lambda m: f"KEY{ord(m[1])}", t)
     t = re.sub(r"\([^)]*\)", "", t)
     toks = [x.strip() for x in re.split(r"[-–—]", t) if x.strip()]
@@ -685,12 +711,12 @@ def apple_split_alternatives(combo_text, desc):
     return combos, desc
 
 
-class _AppleParser(__import__("html.parser", fromlist=["HTMLParser"]).HTMLParser):
+class _AppleParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.sec, self.h, self.stack, self.rows, self.inb = "", None, [], [], 0
 
-    def handle_starttag(self, t, a):
+    def handle_starttag(self, t, _attrs):
         if t in ("h2", "h3"):
             self.h = ""
         elif t == "li":
@@ -733,13 +759,13 @@ def parse_apple_html(html_text):
 
 def _fetch(url, host):
     """GET url over https from exactly `host`; bounded size/time; refuses redirects to other hosts."""
-    import urllib.parse, urllib.request
-
     u = urllib.parse.urlparse(url)
     if u.scheme != "https" or u.hostname != host:
         raise ValueError(f"refusing to fetch {url!r}: only https://{host}/ is allowed")
-    req = urllib.request.Request(url, headers={"User-Agent": f"kb/{VERSION} (+local keybinding index)"})
-    with urllib.request.urlopen(req, timeout=20) as r:
+    req = urllib.request.Request(  # noqa: S310 - https + exact host validated above
+        url, headers={"User-Agent": f"kb/{VERSION} (+local keybinding index)"}
+    )
+    with urllib.request.urlopen(req, timeout=20) as r:  # noqa: S310 - same validated request
         if urllib.parse.urlparse(r.geturl()).hostname != host:
             raise ValueError(f"redirected away from {host}; aborting")
         raw = r.read(APPLE_MAX_BYTES + 1)
@@ -749,8 +775,6 @@ def _fetch(url, host):
 
 
 def _save_doc(name, url, raw, rows, min_rows, extra=None):
-    import hashlib, time
-
     if len(rows) < min_rows:
         raise ValueError(f"only {len(rows)} rows parsed - page layout probably changed; keeping old data")
     doc = {
@@ -767,7 +791,7 @@ def _save_doc(name, url, raw, rows, min_rows, extra=None):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     tmp = DATA_DIR / (name + ".tmp")
     tmp.write_text(json.dumps(doc, indent=1, ensure_ascii=False) + "\n")
-    os.replace(tmp, DATA_DIR / name)
+    tmp.replace(DATA_DIR / name)
     return doc
 
 
@@ -857,6 +881,13 @@ def _kb_key(spec):
     return norm_combo([m for m in mods if m != "numpad"], key)
 
 
+def _safe_kb_key(spec):
+    try:
+        return _kb_key(spec)
+    except (ValueError, IndexError, TypeError):
+        return None
+
+
 def _humanize_selector(sel):
     base = sel.rstrip(":")
     words = re.sub(r"([A-Z])", r" \1", base).lower().split()
@@ -873,11 +904,10 @@ def load_standard_key_binding(path=None):
 
     def walk(node, prefix):
         for k, v in node.items():
-            try:
-                n = _kb_key(k)
-            except Exception:
+            n = _safe_kb_key(k)
+            if n is None:
                 continue
-            seq = prefix + [n]
+            seq = [*prefix, n]
             if isinstance(v, dict):
                 walk(v, seq)
                 continue
@@ -908,8 +938,6 @@ MENU_MOD = {"@": "cmd", "^": "ctrl", "~": "alt", "$": "shift"}
 
 def live_symbolic_hotkeys():
     """Effective system shortcuts as macOS itself resolves them: (enabled, disabled) dicts, or None."""
-    import ctypes
-
     try:
         cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
         get, enabled = cg.CGSGetSymbolicHotKeyValue, cg.CGSIsSymbolicHotKeyEnabled
@@ -975,7 +1003,7 @@ def load_macos():
         seen.add(n)
         name = SYSTEM_HOTKEY_NAMES.get(k) or apple_by_norm.get(n)
         if not name:
-            if not INCLUDE_UNNAMED:
+            if not SETTINGS.include_unnamed:
                 hidden += 1
                 continue
             name = f"System shortcut #{k} (not named by Apple)"
@@ -1002,20 +1030,34 @@ def load_macos():
     return out + docs + kbd + load_app_menu_shortcuts() + load_default_key_binding()
 
 
+def _plist_with_key(path, needle, max_bytes=8_000_000):
+    """Parse a plist only if it is small and mentions `needle` (cheap pre-filter); None on any read/parse problem."""
+    try:
+        if path.stat().st_size > max_bytes:
+            return None
+        raw = path.read_bytes()
+        return plistlib.loads(raw) if needle in raw else None
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return None
+
+
+def _defaults(*args):
+    """Run /usr/bin/defaults with fixed arguments; stdout text, or None if it fails or times out."""
+    try:
+        r = subprocess.run(  # noqa: S603 - absolute path, argv built from constants, no shell
+            [DEFAULTS_BIN, *args], capture_output=True, timeout=5, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
 def load_app_menu_shortcuts():
     """Custom menu shortcuts set in System Settings > Keyboard > App Shortcuts (NSUserKeyEquivalents)."""
     out = []
     prefs = HOME / "Library/Preferences"
     for f in sorted(prefs.glob("*.plist")):
-        try:
-            if f.stat().st_size > 8_000_000:
-                continue
-            raw = f.read_bytes()
-            if b"NSUserKeyEquivalents" not in raw:
-                continue
-            d = plistlib.loads(raw)
-        except Exception:
-            continue
+        d = _plist_with_key(f, b"NSUserKeyEquivalents")
         ke = d.get("NSUserKeyEquivalents") if isinstance(d, dict) else None
         if not isinstance(ke, dict):
             continue
@@ -1064,10 +1106,12 @@ def load_rectangle():
     out = []
     if not DARWIN:
         return out
+    raw = _defaults("export", "com.knollsoft.Rectangle", "-")
     try:
-        r = subprocess.run([DEFAULTS_BIN, "export", "com.knollsoft.Rectangle", "-"], capture_output=True, timeout=5)
-        d = plistlib.loads(r.stdout)
-    except Exception:
+        d = plistlib.loads(raw) if raw else None
+    except (ValueError, plistlib.InvalidFileException):
+        d = None
+    if not d:
         return out
     for k, v in sorted(d.items()):
         if isinstance(v, dict) and "keyCode" in v and "modifierFlags" in v:
@@ -1093,16 +1137,10 @@ def load_raycast():
     out = []
     if not DARWIN:
         return out
-    try:
-        r = subprocess.run(
-            [DEFAULTS_BIN, "read", "com.raycast.macos", "raycastGlobalHotkey"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        spec = r.stdout.strip()
-    except Exception:
+    raw = _defaults("read", "com.raycast.macos", "raycastGlobalHotkey")
+    if raw is None:
         return out
+    spec = raw.decode("utf-8", "replace").strip()
     m = re.fullmatch(r"((?:\w+-)*)(\d+)", spec)
     if m:
         mods = [x for x in m[1].split("-") if x]
@@ -1164,7 +1202,7 @@ def vsc_key(text):
     """keybindings.json notation ('cmd+k cmd+c', 'ctrl+shift+/') -> [norm, ...]. 'meta/win/super' mean cmd on mac."""
     steps = []
     for tok in text.strip().split():
-        parts = tok.split("+") if not tok.endswith("++") else tok[:-2].split("+") + ["+"]
+        parts = tok.split("+") if not tok.endswith("++") else [*tok[:-2].split("+"), "+"]
         key = parts[-1].lower()
         mods = ["cmd" if m.lower() in ("meta", "win", "super") else m for m in parts[:-1]]
         steps.append(norm_combo(mods, key))
@@ -1175,7 +1213,7 @@ def vsc_display(steps):
     return " ".join(pretty(x) for x in steps)
 
 
-class _VscParser(__import__("html.parser", fromlist=["HTMLParser"]).HTMLParser):
+class _VscParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.sec, self.h, self.row, self.cell, self.rows, self.inrow = "", None, None, None, [], False
@@ -1284,7 +1322,7 @@ def load_vscode():
     meta = {}
     removed = set()  # (command, chord) pairs the user removed with a "-command" entry
     # 1) your own keybindings (default profile + named profiles)
-    user_files = [VSC_USER / "keybindings.json"] + sorted((VSC_USER / "profiles").glob("*/keybindings.json"))
+    user_files = [VSC_USER / "keybindings.json", *sorted((VSC_USER / "profiles").glob("*/keybindings.json"))]
     for f in user_files:
         if not f.exists() or f.stat().st_size > 1_000_000:
             continue
@@ -1429,8 +1467,6 @@ LOADERS = [
 
 def load_all(debug=False):
     """Run every source concurrently, each bounded by LOADER_BUDGET, so one stalled read can never hang kb."""
-    import threading, time
-
     results, timings = {}, {}
 
     def work(fn):
@@ -1555,9 +1591,9 @@ def search(items, words, tools=None, key=None, mods=None, by="all"):
     if mods:
         res = [b for b in res if set(mods) <= mods_of(b)]
     text = SEARCH_TEXT[by]
-    for w in words:
-        w = w.lower()
-        res = [b for b in res if w in text(b)]
+    for word in words:
+        needle = word.lower()
+        res = [b for b in res if needle in text(b)]
     return res
 
 
@@ -1580,7 +1616,10 @@ def shadows(items):
     for b in items:
         if b.tool == "macos" and b.scope in APP_SCOPES and b.norm:
             std.setdefault(b.norm, []).append(b)
-    live = lambda lst: [x for x in lst if "disabled" not in x.note]
+
+    def live(lst):
+        return [x for x in lst if "disabled" not in x.note]
+
     return [
         (g, live(std[g.norm]))
         for g in items
@@ -1590,8 +1629,11 @@ def shadows(items):
 
 # ---------------------------------------------------------------- output
 
-USE_COLOR = sys.stdout.isatty() and "NO_COLOR" not in os.environ
-C = lambda code, s: f"\033[{code}m{s}\033[0m" if USE_COLOR else s
+
+def C(code, s):  # noqa: N802 - tiny colour helper, kept short on purpose
+    return f"\033[{code}m{s}\033[0m" if SETTINGS.color else s
+
+
 TOOL_COLOR = {
     "aerospace": "38;5;111",
     "skhd": "38;5;180",
@@ -1656,6 +1698,10 @@ def report_conflicts(items):
     return hard
 
 
+def _meta_line(meta, what):
+    return f"{meta.get('rows', '?')} {what} from {meta.get('source')} fetched {meta.get('fetched_at', '?')[:10]}"
+
+
 def doctor(items):
     """Which sources exist, how many bindings each produced, and what failed to parse."""
     srcs = {
@@ -1682,17 +1728,12 @@ def doctor(items):
     ap_meta = data_file(APPLE_JSON)
     if ap_meta.exists():
         m = json.loads(ap_meta.read_text()).get("meta", {})
-        print(
-            f"  {C('2', 'apple')}    {m.get('rows', '?')} rows from {m.get('source')} fetched {m.get('fetched_at', '?')[:10]}"
-        )
+        print(f"  {C('2', 'apple')}    {_meta_line(m, 'rows')}")
     vm = data_file(VSC_JSON)
     if vm.exists():
         m = json.loads(vm.read_text()).get("meta", {})
         inst = vscode_installed_version()
-        print(
-            f"  {C('2', 'vscode')}   {m.get('rows', '?')} default rows from {m.get('source')} fetched {m.get('fetched_at', '?')[:10]}"
-            f"  (installed VS Code {inst or 'not found'})"
-        )
+        print(f"  {C('2', 'vscode')}   {_meta_line(m, 'default rows')}  (installed VS Code {inst or 'not found'})")
     for w in WARNINGS_INFO:
         print(f"  {C('2', 'note')}     {w}")
     print("\nread-only: kb never writes to your configs.")
@@ -1700,12 +1741,11 @@ def doctor(items):
 
 
 def interactive(items):
-    global USE_COLOR
     fzf = shutil.which("fzf")
     if not fzf:
         print_table(items)
         return
-    USE_COLOR = True
+    SETTINGS.color = True
     kw = min(max(len(b.keys) for b in items), 28)
     lines = [f"{i}\t{row(b, kw)}" for i, b in enumerate(items)]
     # The preview must not re-parse every config on each cursor move: hand it a private snapshot instead.
@@ -1714,7 +1754,7 @@ def interactive(items):
         fd = os.open(snap, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump([asdict(b) for b in items], f)
-        exe = shlex.quote(os.path.abspath(sys.argv[0]))
+        exe = shlex.quote(str(Path(sys.argv[0]).resolve()))
         cmd = [
             fzf,
             "--ansi",
@@ -1735,8 +1775,8 @@ def interactive(items):
             "--bind",
             "ctrl-/:toggle-preview",
         ]
-        subprocess.run(cmd, input="\n".join(lines), text=True)
-    USE_COLOR = sys.stdout.isatty()
+        subprocess.run(cmd, input="\n".join(lines), text=True, check=False)  # noqa: S603 - fzf argv built here, no shell
+    SETTINGS.color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 
 
 def show_detail(idx, snapshot):
@@ -1787,7 +1827,7 @@ def main(argv=None):
     )
     ap.add_argument("--tools", action="store_true", help="list sources")
     ap.add_argument("--doctor", action="store_true", help="check sources and parse warnings")
-    ap.add_argument("--json", action="store_true", help="JSON output (schema_version %d)" % SCHEMA_VERSION)
+    ap.add_argument("--json", action="store_true", help=f"JSON output (schema_version {SCHEMA_VERSION})")
     ap.add_argument(
         "--sync-apple",
         action="store_true",
@@ -1822,15 +1862,13 @@ def main(argv=None):
                 continue
             try:
                 m = fn()["meta"]
-                print(
-                    f"fetched {m['rows']} rows from {m['source']}\n  sha256 {m['sha256'][:16]}…  saved to {DATA_DIR / name}"
-                )
+                print(f"fetched {m['rows']} rows from {m['source']}")
+                print(f"  sha256 {m['sha256'][:16]}…  saved to {DATA_DIR / name}")
             except Exception as e:
                 print(f"kb: sync of {name} failed: {e}", file=sys.stderr)
                 rc = 1
         return rc
-    global INCLUDE_UNNAMED
-    INCLUDE_UNNAMED = a.all_system
+    SETTINGS.include_unnamed = a.all_system
     items = load_all(debug=a.debug)
     if a.doctor:
         return doctor(items)
@@ -1874,11 +1912,9 @@ def run():
         if isinstance(e.code, str):
             print(e.code, file=sys.stderr)
     if STUCK:  # abandoned threads may sit in an uninterruptible syscall; don't wait for them at shutdown
-        for f in (sys.stdout, sys.stderr):
-            try:
-                f.flush()
-            except Exception:
-                pass
+        for stream in (sys.stdout, sys.stderr):
+            with contextlib.suppress(OSError, ValueError):
+                stream.flush()
         os._exit(code)
     sys.exit(code)
 

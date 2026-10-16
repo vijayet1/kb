@@ -310,6 +310,49 @@ class VSCode(Sandbox):
                 kb._fetch(url, kb.VSC_HOST)
 
 
+class Watchdog(Sandbox):
+    def test_stalled_source_is_skipped_not_waited_for(self):
+        import time
+        def hang():
+            time.sleep(30)
+            return []
+        hang.__name__ = "load_hang"
+        ok = lambda: [kb.Binding("t", "k", "d")]
+        ok.__name__ = "load_ok"
+        saved = (kb.LOADERS, kb.LOADER_BUDGET, list(kb.STUCK))
+        kb.LOADERS, kb.LOADER_BUDGET = [hang, ok], 0.4
+        try:
+            t0 = time.monotonic()
+            items = kb.load_all()
+            took = time.monotonic() - t0
+            self.assertLess(took, 3)
+            self.assertEqual([b.tool for b in items], ["t"])  # the healthy source still answers
+            self.assertTrue(any("hang: no answer" in w for w in kb.WARNINGS))
+            self.assertIn("load_hang", kb.STUCK)
+        finally:
+            kb.LOADERS, kb.LOADER_BUDGET = saved[0], saved[1]
+            kb.STUCK[:] = saved[2]
+
+    def test_results_keep_loader_order(self):
+        import time
+        def slow():
+            time.sleep(0.3)
+            return [kb.Binding("first", "k", "d")]
+        slow.__name__ = "load_slow"
+        fast = lambda: [kb.Binding("second", "k", "d")]
+        fast.__name__ = "load_fast"
+        saved = kb.LOADERS
+        kb.LOADERS = [slow, fast]
+        try:
+            self.assertEqual([b.tool for b in kb.load_all()], ["first", "second"])
+        finally:
+            kb.LOADERS = saved
+
+    def test_debug_prints_timings(self):
+        r = subprocess.run([sys.executable, "-m", "kb", "--debug", "--no-fzf", "zzz-nothing"], capture_output=True, text=True, timeout=60)
+        self.assertRegex(r.stderr, r"kb: \w+\s+\d+ ms")
+
+
 class CLI(unittest.TestCase):
     def run_kb(self, *args, env=None):
         e = dict(os.environ, NO_COLOR="1", **(env or {}))

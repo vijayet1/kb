@@ -17,12 +17,15 @@ import argparse, json, os, plistlib, re, shlex, shutil, subprocess, tempfile, to
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 SCHEMA_VERSION = 1
 HOME = Path.home()
 CFG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
 DARWIN = sys.platform == "darwin"
 DEFAULTS_BIN = "/usr/bin/defaults"  # absolute: never resolve system tools through $PATH
+LOADER_BUDGET = float(os.environ.get("KB_LOADER_TIMEOUT", "10"))  # seconds any one source may take
+LAST_TIMINGS = {}  # loader name -> seconds, filled by load_all (shown by --debug / --doctor)
+STUCK = []  # loaders that blew the budget; their threads are abandoned, so we exit with os._exit
 WARNINGS_INFO = []  # non-fatal notices for --doctor
 WARNINGS = []  # parse problems collected here; shown by --doctor and on stderr
 
@@ -1027,13 +1030,46 @@ def load_zsh():
 LOADERS = [load_aerospace, load_skhd, load_tmux, load_herdr, load_ghostty, load_rectangle, load_macos, load_raycast, load_vscode, load_zsh]
 
 
-def load_all():
-    out = []
-    for fn in LOADERS:
+def load_all(debug=False):
+    """Run every source concurrently, each bounded by LOADER_BUDGET, so one stalled read can never hang kb."""
+    import threading, time
+    results, timings = {}, {}
+
+    def work(fn):
+        t0 = time.monotonic()
         try:
-            out += fn()
+            results[fn.__name__] = fn()
         except Exception as e:  # never let one broken config hide the rest
             WARNINGS.append(f"{fn.__name__[5:]}: {type(e).__name__}: {e}")
+        timings[fn.__name__] = time.monotonic() - t0
+
+    threads = [(fn, threading.Thread(target=work, args=(fn,), daemon=True)) for fn in LOADERS]
+    t_start = time.monotonic()
+    for _, t in threads:
+        t.start()
+    noticed = False
+    for fn, t in threads:
+        while t.is_alive():
+            left = LOADER_BUDGET - (time.monotonic() - t_start)
+            if left <= 0:
+                break
+            t.join(min(left, 0.25))
+            if not noticed and time.monotonic() - t_start > 2 and sys.stderr.isatty():
+                noticed = True
+                slow = [f.__name__[5:] for f, th in threads if th.is_alive()]
+                print(f"kb: still reading {', '.join(slow)}… (gives up after {LOADER_BUDGET:g}s)", file=sys.stderr)
+        if t.is_alive():
+            STUCK.append(fn.__name__)
+            WARNINGS.append(f"{fn.__name__[5:]}: no answer after {LOADER_BUDGET:g}s - skipped "
+                            f"(slow disk, security scanner or a stalled system call; KB_LOADER_TIMEOUT=60 waits longer)")
+    out = []
+    for fn in LOADERS:  # stable order regardless of which thread finished first
+        out += results.get(fn.__name__, [])
+    LAST_TIMINGS.clear()
+    LAST_TIMINGS.update(timings)
+    if debug:
+        for name, sec in sorted(timings.items(), key=lambda kv: -kv[1]):
+            print(f"kb: {name[5:]:<10} {sec * 1000:7.0f} ms", file=sys.stderr)
     for w in WARNINGS:
         print(f"kb: warning: {w}", file=sys.stderr)
     return out
@@ -1169,6 +1205,9 @@ def doctor(items):
         print(f"  {t:<10} {state}  {counts.get(t, 0):>3} bindings  {C('2', str(p) if p else '')}")
     for w in WARNINGS:
         print(f"  {C('31', 'warning')}  {w}")
+    slow = {k[5:]: v for k, v in LAST_TIMINGS.items() if v > 1.0}
+    for name, sec in sorted(slow.items(), key=lambda kv: -kv[1]):
+        print(f"  {C('33', 'slow')}     {name} took {sec:.1f}s")
     ap_meta = data_file(APPLE_JSON)
     if ap_meta.exists():
         m = json.loads(ap_meta.read_text()).get("meta", {})
@@ -1235,6 +1274,7 @@ def main(argv=None):
     ap.add_argument("--sync-vscode", action="store_true",
                     help="download VS Code's default keyboard shortcuts (code.visualstudio.com)")
     ap.add_argument("--sync", action="store_true", help="refresh every downloaded source (Apple + VS Code)")
+    ap.add_argument("--debug", action="store_true", help="print how long each source took (to stderr)")
     ap.add_argument("--all-system", action="store_true", help="also list system shortcuts Apple doesn't name")
     ap.add_argument("--no-fzf", action="store_true", help="never launch the interactive browser")
     ap.add_argument("--version", action="version", version=f"kb {VERSION}")
@@ -1261,7 +1301,7 @@ def main(argv=None):
         return rc
     global INCLUDE_UNNAMED
     INCLUDE_UNNAMED = a.all_system
-    items = load_all()
+    items = load_all(debug=a.debug)
     if a.doctor:
         return doctor(items)
     if a.tools:
@@ -1289,12 +1329,25 @@ def main(argv=None):
 
 def run():
     """Console-script entry point (uv/pip install) and `python -m kb`."""
+    code = 0
     try:
-        sys.exit(main())
+        code = main()
     except BrokenPipeError:
-        sys.exit(0)
+        code = 0
     except KeyboardInterrupt:
-        sys.exit(130)
+        code = 130
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        if isinstance(e.code, str):
+            print(e.code, file=sys.stderr)
+    if STUCK:  # abandoned threads may sit in an uninterruptible syscall; don't wait for them at shutdown
+        for f in (sys.stdout, sys.stderr):
+            try:
+                f.flush()
+            except Exception:
+                pass
+        os._exit(code)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 """Run: uv run python -m unittest discover -s tests -v   (or: make test)"""
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -8,8 +10,12 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import kb.cli as kb
+
+# Tests must never touch the network: first-run downloads are opt-in per test (see AutoDownload).
+os.environ["KB_NO_AUTO_SYNC"] = "1"
 
 
 class Sandbox(unittest.TestCase):
@@ -20,8 +26,7 @@ class Sandbox(unittest.TestCase):
         self.home = Path(self.tmp.name)
         self.cfg = self.home / ".config"
         self.cfg.mkdir()
-        self.saved = (kb.HOME, kb.CFG, kb.DARWIN, list(kb.WARNINGS), kb.DATA_DIR, kb.VSC_APP, kb.VSC_USER, kb.BUNDLED)
-        kb.BUNDLED = self.home / "no-bundled-data"
+        self.saved = (kb.HOME, kb.CFG, kb.DARWIN, list(kb.WARNINGS), kb.DATA_DIR, kb.VSC_APP, kb.VSC_USER)
         kb.VSC_APP, kb.VSC_USER = self.home / "VSCode.app", self.home / "Code/User"
         kb.DATA_DIR = self.home / ".local/share/kb"
         kb.HOME, kb.CFG, kb.DARWIN = self.home, self.cfg, False
@@ -30,7 +35,7 @@ class Sandbox(unittest.TestCase):
     def tearDown(self):
         kb.HOME, kb.CFG, kb.DARWIN = self.saved[:3]
         kb.WARNINGS[:] = self.saved[3]
-        kb.DATA_DIR, kb.VSC_APP, kb.VSC_USER, kb.BUNDLED = self.saved[4:8]
+        kb.DATA_DIR, kb.VSC_APP, kb.VSC_USER = self.saved[4:7]
         self.tmp.cleanup()
 
     def write(self, rel, text):
@@ -693,14 +698,81 @@ class Packaging(Sandbox):
         pp = Path(__file__).resolve().parents[1] / "pyproject.toml"
         self.assertEqual(tomllib.loads(pp.read_text())["project"]["dependencies"], [])
 
-    def test_bundled_snapshot_is_used_until_synced(self):
-        real = Path(kb.__file__).resolve().parent / "data"
-        self.assertTrue((real / kb.APPLE_JSON).exists() and (real / kb.VSC_JSON).exists())
-        kb.BUNDLED = real
-        self.assertEqual(kb.data_file(kb.APPLE_JSON), real / kb.APPLE_JSON)
+    def test_no_shortcut_data_ships_in_the_package(self):
+        pkg = Path(kb.__file__).resolve().parent
+        self.assertEqual(sorted(p.name for p in pkg.rglob("*.json")), [])
+        self.assertFalse((pkg / "data").exists())
+
+
+class AutoDownload(Sandbox):
+    """Apple/Microsoft shortcut lists are created locally on first use, never shipped."""
+
+    def setUp(self):
+        super().setUp()
+        self.synced = []
+        self.saved_sync = (kb.sync_apple, kb.sync_vscode)
+
+        def fake(name):
+            def sync(timeout=20):
+                self.synced.append((name, timeout))
+                kb.DATA_DIR.mkdir(parents=True, exist_ok=True)
+                (kb.DATA_DIR / name).write_text(json.dumps({"meta": {}, "rows": []}))
+
+            return sync
+
+        kb.sync_apple, kb.sync_vscode = fake(kb.APPLE_JSON), fake(kb.VSC_JSON)
+        patcher = mock.patch.dict(os.environ, {"KB_NO_AUTO_SYNC": ""})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self):
+        kb.sync_apple, kb.sync_vscode = self.saved_sync
+        super().tearDown()
+
+    def test_existing_file_is_used_without_downloading(self):
         kb.DATA_DIR.mkdir(parents=True)
         (kb.DATA_DIR / kb.APPLE_JSON).write_text("{}")
-        self.assertEqual(kb.data_file(kb.APPLE_JSON), kb.DATA_DIR / kb.APPLE_JSON)  # user copy wins
+        self.assertEqual(kb.ensure_data(kb.APPLE_JSON), kb.DATA_DIR / kb.APPLE_JSON)
+        self.assertEqual(self.synced, [])
+
+    def test_missing_file_is_downloaded_once_with_a_short_timeout_and_announced(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            p1 = kb.ensure_data(kb.VSC_JSON)
+            p2 = kb.ensure_data(kb.VSC_JSON)
+        self.assertEqual(p1, kb.DATA_DIR / kb.VSC_JSON)
+        self.assertEqual(p2, p1)
+        self.assertEqual(self.synced, [(kb.VSC_JSON, kb.AUTO_SYNC_TIMEOUT)])  # second call finds the file
+        self.assertIn("downloading it once from https://code.visualstudio.com/", err.getvalue())
+
+    def test_opt_out_env_disables_downloads_and_loaders_warn_instead(self):
+        with mock.patch.dict(os.environ, {"KB_NO_AUTO_SYNC": "1"}):
+            self.assertIsNone(kb.ensure_data(kb.APPLE_JSON))
+            self.assertEqual(kb.load_apple_docs(), [])
+            self.assertEqual(kb.load_vscode(), [])
+        self.assertEqual(self.synced, [])
+        self.assertTrue(any("kb --sync-apple" in w for w in kb.WARNINGS))
+        self.assertTrue(any("kb --sync-vscode" in w for w in kb.WARNINGS))
+
+    def test_download_failure_warns_and_does_not_crash(self):
+        def boom(timeout=20):
+            raise OSError("network is unreachable")
+
+        kb.sync_apple = boom
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(kb.ensure_data(kb.APPLE_JSON))
+        self.assertTrue(any("could not download" in w and "unreachable" in w for w in kb.WARNINGS))
+
+    def test_tool_scoped_run_never_downloads_unrelated_data(self):
+        kb.DARWIN = True
+        with contextlib.redirect_stderr(io.StringIO()):
+            kb.load_all(tools=["tmux"])
+        self.assertEqual(self.synced, [])
+
+    def test_save_leaves_no_temp_files_behind(self):
+        rows = [{"section": "s", "combo": "c", "desc": "d"}] * 60
+        kb._save_doc(kb.APPLE_JSON, kb.APPLE_URL, b"raw", rows, 50)
+        self.assertEqual(sorted(p.name for p in kb.DATA_DIR.iterdir()), [kb.APPLE_JSON])
 
 
 if __name__ == "__main__":

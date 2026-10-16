@@ -4,7 +4,15 @@ version = "1.6.0"
 description = "Browse and search every keybinding on your machine, read live from your configs"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Vijay Gupta" }]
 dependencies = []  # stdlib only, on purpose
+
+[project.urls]
+Homepage = "https://github.com/vijayet1/kb"
+Source = "https://github.com/vijayet1/kb"
+Changelog = "https://github.com/vijayet1/kb/blob/main/CHANGELOG.md"
 
 [project.scripts]
 kb = "kb.cli:run"
@@ -15,6 +23,10 @@ build-backend = "uv_build"
 
 [tool.uv]
 package = true
+
+[tool.uv.build-backend]
+source-exclude = ["**/.mypy_cache/**", "**/.ruff_cache/**", "**/__pycache__/**"]
+wheel-exclude = ["**/.mypy_cache/**", "**/.ruff_cache/**", "**/__pycache__/**"]
 
 [dependency-groups]
 dev = ["ruff>=0.17", "mypy>=1.13"]
@@ -37,6 +49,7 @@ ignore = [
 "scripts/*" = ["S603", "S607"]  # release helper shells out to git/uv with fixed arguments
 
 [tool.mypy]
+cache_dir = ".mypy_cache"  # repo root, never inside the package (it would end up in the wheel)
 python_version = "3.11"
 check_untyped_defs = true
 warn_unused_ignores = true

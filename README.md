@@ -32,11 +32,14 @@ Pick whichever tool you already use — all of them install the same `kb` comman
 | **make** | `make install` (editable) or `make install-release` | | `make uninstall` |
 
 `just` and `make` are thin wrappers over uv with identical recipes (`test`, `install`, `install-release`,
-`uninstall`, `sync`, `lock`, `doctor`), so use either. Once the repo has a remote, `uvx --from git+<repo-url> kb`
-runs it anywhere without cloning. Check an install with `kb --version` and `kb --doctor`.
+`uninstall`, `sync`, `lock`, `doctor`), so use either. To run it straight from GitHub without cloning:
+`uvx --from git+https://github.com/vijayet1/kb kb` (or `uv tool install git+https://github.com/vijayet1/kb`). Check an install with `kb --version` and `kb --doctor`.
 
-`kb` ships with a snapshot of Apple's and VS Code's default shortcuts, so it works immediately after install.
-`kb --sync` downloads fresh copies into `~/.local/share/kb/` (yours win over the bundled snapshot).
+**First run needs the network once.** Apple's and VS Code's default shortcut lists are not shipped with `kb`; the first
+run that needs them downloads them from the official pages (`support.apple.com`, `code.visualstudio.com` — nothing else)
+into `~/.local/share/kb/` and says so on stderr. Later runs are offline. `kb --sync` refreshes them; set
+`KB_NO_AUTO_SYNC=1` to forbid automatic downloads (then run `kb --sync` yourself). Offline or blocked, `kb` still works for
+everything else and warns about what is missing. See *Data and licensing* below.
 
 ## Develop
 
@@ -44,7 +47,7 @@ runs it anywhere without cloning. Check an install with `kb --version` and `kb -
     just test          # or: make test  — isolated uv env, 46 tests
     just fmt           # apply formatter and safe lint fixes
     uv run kb ...      # run from the checkout
-    just sync          # refresh data and update the snapshot bundled in src/kb/data/
+    just sync          # re-download the Apple + VS Code shortcut data
 
 Versioning and releases: [SemVer](https://semver.org/) (features bump minor, fixes/tooling bump patch), with the
 version stored only in `pyproject.toml` (the code reads it from there, or from installed package metadata). History is in
@@ -69,7 +72,7 @@ tools (e.g. Microsoft Defender for Endpoint) scan every file a *new process* ope
 many small files take seconds; `kb` therefore reads as few files as possible (see below). If it still stalls, ask your
 admin to exclude the `kb` tool environment (`~/.local/share/uv/tools/kb`) from real-time scanning.
 
-Layout: `src/kb/cli.py` (the tool) · `src/kb/data/` (bundled snapshots) · `tests/` · `pyproject.toml` (uv_build
+Layout: `src/kb/cli.py` (the tool) · `tests/` · `pyproject.toml` (uv_build
 backend) + `uv.lock` · `.python-version` (3.12 for development; the code supports 3.11+).
 
 ## How it works
@@ -102,7 +105,7 @@ macOS shortcuts: where each comes from (nothing is typed in from memory)
   and anything still unnamed is hidden unless `--all-system`.
 - Standard shortcuts (⌘C, Finder, text, accessibility): Apple Support "Mac keyboard shortcuts"
   (https://support.apple.com/en-us/102650), downloaded with `kb --sync-apple` into
-  `~/.local/share/kb/apple-shortcuts.json` (a snapshot is bundled in `src/kb/data/`, with source URL, fetch time and SHA-256).
+  `~/.local/share/kb/apple-shortcuts.json` (created automatically on first use; stores source URL, fetch time and SHA-256).
   Refresh it when a new macOS ships; it refuses to overwrite on a layout change (<50 rows) or a non-Apple host.
 - Cocoa text editing: Apple's own `AppKit.framework/Resources/StandardKeyBinding.dict`.
 - Your changes: custom App Shortcuts (`NSUserKeyEquivalents`) and `~/Library/KeyBindings/DefaultKeyBinding.dict`.
@@ -118,3 +121,10 @@ VS Code (`-t vscode`)
   removed), and `contributes.keybindings` from built-in and installed extensions (`mac` key preferred, `%nls%` titles
   resolved).
 - Chords (`⌘K ⌘C`) are shown and searchable but never compared as single combos. `when` clauses are kept in the text.
+
+## Data and licensing
+
+`kb` is MIT-licensed (see `LICENSE`). The shortcut lists it reads from Apple's and Microsoft's pages belong to their
+owners: they are downloaded to *your* machine for your own use and are deliberately **not** stored in this repository,
+its history or the published package (`.gitignore` blocks them; a test fails if the package ever contains a JSON data
+file). Everything else `kb` shows comes from your own configuration files.

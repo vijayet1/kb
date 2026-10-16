@@ -15,6 +15,7 @@ import argparse
 import contextlib
 import ctypes
 import hashlib
+import http.client
 import importlib.metadata
 import json
 import os
@@ -647,7 +648,7 @@ APPLE_HOST = "support.apple.com"
 APPLE_MAX_BYTES = 5_000_000
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share") / "kb"
 APPLE_JSON = "apple-shortcuts.json"
-BUNDLED = Path(__file__).resolve().parent / "data"  # snapshot shipped with the package; used until you run --sync
+AUTO_SYNC_TIMEOUT = 8  # seconds; first-run downloads must fit inside the per-source budget
 STANDARD_KEY_BINDING = Path("/System/Library/Frameworks/AppKit.framework/Resources/StandardKeyBinding.dict")
 
 # Apple's article headings -> where the shortcut applies. "system" mixes Finder and OS-wide entries, so it is
@@ -775,7 +776,7 @@ def parse_apple_html(html_text):
     return p.rows
 
 
-def _fetch(url: str, host: str) -> bytes:
+def _fetch(url: str, host: str, timeout: float = 20) -> bytes:
     """GET url over https from exactly `host`; bounded size/time; refuses redirects to other hosts."""
     u = urllib.parse.urlparse(url)
     if u.scheme != "https" or u.hostname != host:
@@ -783,7 +784,7 @@ def _fetch(url: str, host: str) -> bytes:
     req = urllib.request.Request(  # noqa: S310 - https + exact host validated above
         url, headers={"User-Agent": f"kb/{VERSION} (+local keybinding index)"}
     )
-    with urllib.request.urlopen(req, timeout=20) as r:  # noqa: S310 - same validated request
+    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - same validated request
         if urllib.parse.urlparse(r.geturl()).hostname != host:
             raise ValueError(f"redirected away from {host}; aborting")
         raw = r.read(APPLE_MAX_BYTES + 1)
@@ -807,30 +808,48 @@ def _save_doc(name, url, raw, rows, min_rows, extra=None):
         "rows": rows,
     }
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = DATA_DIR / (name + ".tmp")
+    tmp = DATA_DIR / f"{name}.{os.getpid()}.tmp"  # unique per process: two kb runs may sync at once
     tmp.write_text(json.dumps(doc, indent=1, ensure_ascii=False) + "\n")
     tmp.replace(DATA_DIR / name)
     return doc
 
 
-def sync_apple(url: str = APPLE_URL) -> dict:
+def sync_apple(url: str = APPLE_URL, timeout: float = 20) -> dict:
     """Fetch Apple's 'Mac keyboard shortcuts' article and store the rows (plus provenance) in DATA_DIR."""
-    raw = _fetch(url, APPLE_HOST)
+    raw = _fetch(url, APPLE_HOST, timeout)
     return _save_doc(APPLE_JSON, url, raw, parse_apple_html(raw.decode("utf-8", "replace")), 50)
 
 
-def data_file(name: str) -> Path:
-    """Your synced copy wins; otherwise the snapshot bundled with the package."""
-    for d in (DATA_DIR, BUNDLED):
-        if (d / name).exists():
-            return d / name
-    return DATA_DIR / name
+def auto_sync_enabled() -> bool:
+    return os.environ.get("KB_NO_AUTO_SYNC", "") in ("", "0")
+
+
+def ensure_data(name: str) -> Path | None:
+    """Path of a downloaded data file, fetching it once if it is missing (first run on this machine).
+
+    Shortcut lists from Apple and Microsoft are never shipped in this repo or package; they are created locally from
+    the official pages. Returns None when unavailable (offline, auto-download disabled, page layout changed)."""
+    path = DATA_DIR / name
+    if path.exists():
+        return path
+    sync, host = {APPLE_JSON: (sync_apple, APPLE_HOST), VSC_JSON: (sync_vscode, VSC_HOST)}[name]
+    if not auto_sync_enabled():
+        return None
+    print(
+        f"kb: {name} not found - downloading it once from https://{host}/ (KB_NO_AUTO_SYNC=1 disables)", file=sys.stderr
+    )
+    try:
+        sync(timeout=AUTO_SYNC_TIMEOUT)
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        WARNINGS.append(f"could not download {name}: {e}")
+        return None
+    return path if path.exists() else None
 
 
 def load_apple_docs() -> list[Binding]:
-    p = data_file(APPLE_JSON)
-    if not p.exists():
-        WARNINGS.append(f"apple docs: {p} missing - run `kb --sync-apple` to download Apple's shortcut list")
+    p = ensure_data(APPLE_JSON)
+    if p is None:
+        WARNINGS.append("apple docs unavailable - run `kb --sync-apple` when online to download Apple's shortcut list")
         return []
     doc = json.loads(p.read_text())
     meta = doc.get("meta", {})
@@ -1288,8 +1307,8 @@ def vscode_installed_version():
         return ""
 
 
-def sync_vscode(url: str = VSC_URL) -> dict:
-    raw = _fetch(url, VSC_HOST)
+def sync_vscode(url: str = VSC_URL, timeout: float = 20) -> dict:
+    raw = _fetch(url, VSC_HOST, timeout)
     rows = parse_vscode_html(raw.decode("utf-8", "replace"))
     return _save_doc(VSC_JSON, url, raw, rows, 100, {"installed_vscode": vscode_installed_version()})
 
@@ -1337,7 +1356,7 @@ def _nls(ext_dir, value):
 
 def load_vscode() -> list[Binding]:
     out: list[Binding] = []
-    docs = data_file(VSC_JSON)
+    docs = ensure_data(VSC_JSON)
     meta = {}
     removed = set()  # (command, chord) pairs the user removed with a "-command" entry
     # 1) your own keybindings (default profile + named profiles)
@@ -1374,7 +1393,7 @@ def load_vscode() -> list[Binding]:
                 )
             )
     # 2) official defaults (synced from Microsoft's reference page)
-    if docs.exists():
+    if docs is not None:
         d = json.loads(docs.read_text())
         meta = d.get("meta", {})
         for r in d.get("rows", []):
@@ -1398,7 +1417,7 @@ def load_vscode() -> list[Binding]:
                 b.note = "removed by your keybindings.json"
             out.append(b)
     else:
-        WARNINGS.append(f"vscode: {docs} missing - run `kb --sync-vscode` to download VS Code's default shortcuts")
+        WARNINGS.append("vscode defaults unavailable - run `kb --sync-vscode` when online to download them")
     return out
 
 
@@ -1809,11 +1828,11 @@ def doctor(items: list[Binding]) -> int:
     slow = {k[5:]: v for k, v in LAST_TIMINGS.items() if v > 1.0}
     for name, sec in sorted(slow.items(), key=lambda kv: -kv[1]):
         print(f"  {C('33', 'slow')}     {name} took {sec:.1f}s")
-    ap_meta = data_file(APPLE_JSON)
+    ap_meta = DATA_DIR / APPLE_JSON
     if ap_meta.exists():
         m = json.loads(ap_meta.read_text()).get("meta", {})
         print(f"  {C('2', 'apple')}    {_meta_line(m, 'rows')}")
-    vm = data_file(VSC_JSON)
+    vm = DATA_DIR / VSC_JSON
     if vm.exists():
         m = json.loads(vm.read_text()).get("meta", {})
         inst = vscode_installed_version()

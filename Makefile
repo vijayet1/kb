@@ -31,9 +31,8 @@ install-release:    ## install a regular (non-editable) copy
 uninstall:
 	uv tool uninstall kb
 
-sync:               ## refresh Apple + VS Code data, then update the snapshot bundled in the package
+sync:               ## re-download the Apple + VS Code shortcut data into ~/.local/share/kb
 	uv run kb --sync
-	cp "$${XDG_DATA_HOME:-$$HOME/.local/share}"/kb/*.json src/kb/data/
 
 lock:
 	uv lock

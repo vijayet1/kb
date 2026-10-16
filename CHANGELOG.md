@@ -8,10 +8,14 @@ changes only when that output breaks.
 ## [Unreleased]
 
 ### Changed
+- Apple and VS Code shortcut data is no longer bundled or committed. It is downloaded automatically, once, the first
+  time it is needed (8 s timeout, official hosts only, announced on stderr) into `~/.local/share/kb/`;
+  `KB_NO_AUTO_SYNC=1` disables that. Offline runs still work and warn about what is missing.
 - The version now lives only in `pyproject.toml`; the code reads it from there (checkout) or from the installed
   package metadata.
 
 ### Added
+- MIT `LICENSE`, project URLs and license metadata for the public repository.
 - `just release <patch|minor|major>` (`make release LEVEL=…`): checks the tree is clean and on `main`, runs lint and
   tests, bumps the version with `uv version`, promotes this changelog section, commits and creates an annotated
   `vX.Y.Z` tag. Nothing is pushed.

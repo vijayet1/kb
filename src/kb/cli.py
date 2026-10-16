@@ -1,15 +1,16 @@
 """kb - browse and search every keybinding on this Mac, read live from your configs.
 
-  kb                   interactive fuzzy browser (fzf), falls back to a full list
-  kb tmux split        search: every word must match (tool, keys, description, command)
-  kb -k opt+t          who owns this key combo? (alt/opt/option, cmd/super, ctrl, shift)
-  kb -m command        every binding that uses the Command (⌘) key (also: -m cmd,shift  /  -m ⌥)
-  kb --by keys left    search only the key combo;  kb --by name command  search only what it does
-  kb -t aerospace      only one tool (repeatable: -t tmux -t skhd)
-  kb -c                show conflicts (same key bound twice)
-  kb --tools           list sources and how many bindings each has
-  kb --json            machine-readable output
+kb                   interactive fuzzy browser (fzf), falls back to a full list
+kb tmux split        search: every word must match (tool, keys, description, command)
+kb -k opt+t          who owns this key combo? (alt/opt/option, cmd/super, ctrl, shift)
+kb -m command        every binding that uses the Command (⌘) key (also: -m cmd,shift  /  -m ⌥)
+kb --by keys left    search only the key combo;  kb --by name command  search only what it does
+kb -t aerospace      only one tool (repeatable: -t tmux -t skhd)
+kb -c                show conflicts (same key bound twice)
+kb --tools           list sources and how many bindings each has
+kb --json            machine-readable output
 """
+
 import sys
 
 if sys.version_info < (3, 11):
@@ -36,28 +37,68 @@ WARNINGS = []  # parse problems collected here; shown by --doctor and on stderr
 MOD_ORDER = ["ctrl", "alt", "shift", "cmd", "fn"]
 MOD_SYM = {"ctrl": "⌃", "alt": "⌥", "shift": "⇧", "cmd": "⌘", "fn": "fn "}
 MOD_ALIAS = {
-    "ctrl": "ctrl", "control": "ctrl", "ctl": "ctrl",
-    "alt": "alt", "opt": "alt", "option": "alt", "meta": "alt", "lalt": "alt", "ralt": "alt",
-    "shift": "shift", "lshift": "shift", "rshift": "shift",
-    "cmd": "cmd", "command": "cmd", "super": "cmd", "lcmd": "cmd", "rcmd": "cmd",
+    "ctrl": "ctrl",
+    "control": "ctrl",
+    "ctl": "ctrl",
+    "alt": "alt",
+    "opt": "alt",
+    "option": "alt",
+    "meta": "alt",
+    "lalt": "alt",
+    "ralt": "alt",
+    "shift": "shift",
+    "lshift": "shift",
+    "rshift": "shift",
+    "cmd": "cmd",
+    "command": "cmd",
+    "super": "cmd",
+    "lcmd": "cmd",
+    "rcmd": "cmd",
     "fn": "fn",
 }
 KEY_ALIAS = {
-    "minus": "-", "equal": "=", "slash": "/", "comma": ",", "period": ".", "semicolon": ";",
-    "quote": "'", "backslash": "\\", "backtick": "`", "grave": "`",
-    "leftsquarebracket": "[", "rightsquarebracket": "]", "lbracket": "[", "rbracket": "]",
-    "enter": "return", "esc": "escape", "bspace": "backspace", "del": "delete",
+    "minus": "-",
+    "equal": "=",
+    "slash": "/",
+    "comma": ",",
+    "period": ".",
+    "semicolon": ";",
+    "quote": "'",
+    "backslash": "\\",
+    "backtick": "`",
+    "grave": "`",
+    "leftsquarebracket": "[",
+    "rightsquarebracket": "]",
+    "lbracket": "[",
+    "rbracket": "]",
+    "enter": "return",
+    "esc": "escape",
+    "bspace": "backspace",
+    "del": "delete",
 }
-KEY_SYM = {"left": "←", "right": "→", "up": "↑", "down": "↓", "return": "↩", "tab": "⇥",
-           "escape": "⎋", "space": "Space", "backspace": "⌫", "delete": "⌦"}
+KEY_SYM = {
+    "left": "←",
+    "right": "→",
+    "up": "↑",
+    "down": "↓",
+    "return": "↩",
+    "tab": "⇥",
+    "escape": "⎋",
+    "space": "Space",
+    "backspace": "⌫",
+    "delete": "⌦",
+}
 
 
 _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _SECRET = re.compile(
     r"(?i)((?:token|secret|passw(?:or)?d|passwd|api[_-]?key|apikey|auth|bearer|credential)s?[\w-]*\s*[=:]\s*|"
     r"authorization:\s*(?:bearer|basic)\s+|--?(?:token|password|passwd|secret|api-key)[= ])"
-    r"(\S+)")
-_TOKENISH = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,})")
+    r"(\S+)"
+)
+_TOKENISH = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,})"
+)
 
 
 def sanitize(text):
@@ -72,9 +113,9 @@ def redact(text):
 @dataclass
 class Binding:
     tool: str
-    keys: str            # display
-    desc: str            # what it does
-    norm: str = ""       # canonical combo, e.g. "alt+t"; "" if not comparable
+    keys: str  # display
+    desc: str  # what it does
+    norm: str = ""  # canonical combo, e.g. "alt+t"; "" if not comparable
     scope: str = "global"  # global | <context inside an app>
     raw: str = ""
     src: str = ""
@@ -91,8 +132,10 @@ class Binding:
 
 
 def norm_combo(mods, key):
-    ms = sorted({MOD_ALIAS.get(m.lower(), m.lower()) for m in mods if m},
-                key=lambda m: MOD_ORDER.index(m) if m in MOD_ORDER else 9)
+    ms = sorted(
+        {MOD_ALIAS.get(m.lower(), m.lower()) for m in mods if m},
+        key=lambda m: MOD_ORDER.index(m) if m in MOD_ORDER else 9,
+    )
     k = key.lower()
     k = KEY_ALIAS.get(k, k)
     return "+".join(ms + [k])
@@ -129,6 +172,7 @@ def parse_combo(text):
 
 # ---------------------------------------------------------------- AeroSpace
 
+
 def aero_desc(cmd):
     cmd = cmd.strip()
     rules = [
@@ -142,8 +186,10 @@ def aero_desc(cmd):
         (r"layout (.+)", lambda m: f"Switch layout: {m[1]}"),
         (r"workspace-back-and-forth", lambda m: "Jump to previous workspace"),
         (r"workspace (\S+)", lambda m: f"Go to workspace {m[1]}"),
-        (r"move-node-to-workspace (\S+)( --focus-follows-window)?",
-         lambda m: f"Send window to workspace {m[1]}" + (" and follow" if m[2] else "")),
+        (
+            r"move-node-to-workspace (\S+)( --focus-follows-window)?",
+            lambda m: f"Send window to workspace {m[1]}" + (" and follow" if m[2] else ""),
+        ),
         (r"move-workspace-to-monitor.*", lambda m: "Move workspace to next monitor"),
         (r"move-node-to-monitor.*", lambda m: "Move window to next monitor"),
         (r"mode (\w+)", lambda m: f"Enter '{m[1]}' mode" if m[1] != "main" else "Back to main mode"),
@@ -176,14 +222,23 @@ def load_aerospace():
                 desc += "  (then back to main)"
             lineno = next((i + 1 for i, l in enumerate(lines) if re.match(rf"\s*{re.escape(key)}\s*=", l)), 0)
             n = parse_combo(key)
-            out.append(Binding("aerospace", pretty(n), desc, n,
-                               "global" if mode == "main" else f"mode:{mode}",
-                               " ; ".join(cl), f"{p}:{lineno}",
-                               f"window-manager tiling {mode}"))
+            out.append(
+                Binding(
+                    "aerospace",
+                    pretty(n),
+                    desc,
+                    n,
+                    "global" if mode == "main" else f"mode:{mode}",
+                    " ; ".join(cl),
+                    f"{p}:{lineno}",
+                    f"window-manager tiling {mode}",
+                )
+            )
     return out
 
 
 # ---------------------------------------------------------------- skhd
+
 
 def load_skhd():
     p = CFG / "skhd" / "skhdrc"
@@ -211,13 +266,26 @@ def load_skhd():
 # ---------------------------------------------------------------- tmux
 
 TMUX_VERBS = {
-    "new-window": "New window", "previous-window": "Previous window", "next-window": "Next window",
-    "last-window": "Last window", "list-windows": "List windows", "rename-window": "Rename window",
-    "source-file": "Reload config", "detach": "Detach from session", "list-clients": "List clients",
-    "lock-server": "Lock server", "refresh-client": "Refresh client", "choose-window": "Choose window",
-    "choose-session": "Choose session", "command-prompt": "tmux command prompt",
-    "kill-pane": "Kill pane", "swap-pane": "Swap pane", "resize-window": "Resize window to fit",
-    "send-keys": "Send keys", "set": "Toggle option", "setw": "Toggle window option",
+    "new-window": "New window",
+    "previous-window": "Previous window",
+    "next-window": "Next window",
+    "last-window": "Last window",
+    "list-windows": "List windows",
+    "rename-window": "Rename window",
+    "source-file": "Reload config",
+    "detach": "Detach from session",
+    "list-clients": "List clients",
+    "lock-server": "Lock server",
+    "refresh-client": "Refresh client",
+    "choose-window": "Choose window",
+    "choose-session": "Choose session",
+    "command-prompt": "tmux command prompt",
+    "kill-pane": "Kill pane",
+    "swap-pane": "Swap pane",
+    "resize-window": "Resize window to fit",
+    "send-keys": "Send keys",
+    "set": "Toggle option",
+    "setw": "Toggle window option",
 }
 
 
@@ -230,7 +298,9 @@ def tmux_desc(cmd):
         inner = c[1]
         return "Prompt: " + inner.replace("-", " ")
     if v == "split-window":
-        return "Split pane " + ("horizontally (side by side)" if "-h" in c else "vertically (stacked)" if "-v" in c else "(default)")
+        return "Split pane " + (
+            "horizontally (side by side)" if "-h" in c else "vertically (stacked)" if "-v" in c else "(default)"
+        )
     if v == "select-pane":
         d = {"-L": "left", "-D": "down", "-U": "up", "-R": "right"}
         return "Select pane " + next((d[x] for x in c if x in d), "")
@@ -278,8 +348,9 @@ def load_tmux():
                 continue
             m = re.match(r"set\s+-g\s+@(\w[\w-]*?)-bind\s+['\"]?([^'\"\s]+)", s)
             if m:
-                out.append(Binding("tmux", f"{prefix} › {m[2]}", f"Plugin: {m[1]}", "", "prefix",
-                                   s, f"{p}:{i}", "plugin"))
+                out.append(
+                    Binding("tmux", f"{prefix} › {m[2]}", f"Plugin: {m[1]}", "", "prefix", s, f"{p}:{i}", "plugin")
+                )
                 continue
             if not re.match(r"bind(-key)?\s", s):
                 continue
@@ -302,8 +373,7 @@ def load_tmux():
             key, cmd = t[0], " ".join(t[1:])
             kd = tmux_key(key)
             disp = kd if root else (f"{prefix} › {kd}" if table == "prefix" else f"[{table}] {kd}")
-            out.append(Binding("tmux", disp, tmux_desc(cmd), "", table, cmd, f"{p}:{i}",
-                               f"multiplexer {table}"))
+            out.append(Binding("tmux", disp, tmux_desc(cmd), "", table, cmd, f"{p}:{i}", f"multiplexer {table}"))
     # same table+key bound twice: the later one wins
     last = {}
     for b in out:
@@ -316,6 +386,7 @@ def load_tmux():
 
 # ---------------------------------------------------------------- herdr
 
+
 def load_herdr():
     p = CFG / "herdr" / "config.toml"
     out = []
@@ -325,18 +396,39 @@ def load_herdr():
     keys = d.get("keys", {})
     prefix = keys.get("prefix")
     if prefix:
-        out.append(Binding("herdr", prefix.replace("ctrl+", "Ctrl-").upper().replace("CTRL-", "Ctrl-"),
-                           "Prefix key", "", "herdr", f"prefix = {prefix}", str(p)))
+        out.append(
+            Binding(
+                "herdr",
+                prefix.replace("ctrl+", "Ctrl-").upper().replace("CTRL-", "Ctrl-"),
+                "Prefix key",
+                "",
+                "herdr",
+                f"prefix = {prefix}",
+                str(p),
+            )
+        )
     for c in keys.get("command", []):
         k = c.get("key", "")
-        disp = k.replace("prefix+", f"{(prefix or 'prefix').replace('ctrl+', 'Ctrl-').title().replace('Ctrl-', 'Ctrl-')} › ")
-        out.append(Binding("herdr", disp, f"{c.get('type', 'command')}: {c.get('command', '')} "
-                           f"({c.get('width', '')}×{c.get('height', '')})".replace(" (×)", ""),
-                           "", "herdr", json.dumps(c), str(p)))
+        disp = k.replace(
+            "prefix+", f"{(prefix or 'prefix').replace('ctrl+', 'Ctrl-').title().replace('Ctrl-', 'Ctrl-')} › "
+        )
+        out.append(
+            Binding(
+                "herdr",
+                disp,
+                f"{c.get('type', 'command')}: {c.get('command', '')} "
+                f"({c.get('width', '')}×{c.get('height', '')})".replace(" (×)", ""),
+                "",
+                "herdr",
+                json.dumps(c),
+                str(p),
+            )
+        )
     return out
 
 
 # ---------------------------------------------------------------- Ghostty / cmux
+
 
 def load_ghostty():
     out = []
@@ -347,52 +439,161 @@ def load_ghostty():
             m = re.match(r"\s*keybind\s*=\s*(.+?)=(.+)", line)
             if m:
                 n = parse_combo(m[1].replace("+", "-").replace("super", "cmd"))
-                out.append(Binding("ghostty", pretty(n), m[2].strip().replace("_", " "), n,
-                                   "ghostty", line.strip(), f"{p}:{i}"))
+                out.append(
+                    Binding(
+                        "ghostty", pretty(n), m[2].strip().replace("_", " "), n, "ghostty", line.strip(), f"{p}:{i}"
+                    )
+                )
     return out
 
 
 # ---------------------------------------------------------------- macOS
 
-KEYCODES = {0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g", 6: "z", 7: "x", 8: "c", 9: "v", 11: "b",
-            12: "q", 13: "w", 14: "e", 15: "r", 16: "y", 17: "t", 18: "1", 19: "2", 20: "3", 21: "4",
-            22: "6", 23: "5", 24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0", 30: "]", 31: "o",
-            32: "u", 33: "[", 34: "i", 35: "p", 36: "return", 37: "l", 38: "j", 39: "'", 40: "k",
-            41: ";", 42: "\\", 43: ",", 44: "/", 45: "n", 46: "m", 47: ".", 48: "tab", 49: "space",
-            50: "`", 51: "delete", 53: "escape", 122: "f1", 120: "f2", 99: "f3", 118: "f4", 96: "f5", 97: "f6", 98: "f7", 100: "f8",
-            101: "f9", 109: "f10", 103: "f11", 111: "f12", 123: "left", 124: "right", 125: "down", 126: "up"}
+KEYCODES = {
+    0: "a",
+    1: "s",
+    2: "d",
+    3: "f",
+    4: "h",
+    5: "g",
+    6: "z",
+    7: "x",
+    8: "c",
+    9: "v",
+    11: "b",
+    12: "q",
+    13: "w",
+    14: "e",
+    15: "r",
+    16: "y",
+    17: "t",
+    18: "1",
+    19: "2",
+    20: "3",
+    21: "4",
+    22: "6",
+    23: "5",
+    24: "=",
+    25: "9",
+    26: "7",
+    27: "-",
+    28: "8",
+    29: "0",
+    30: "]",
+    31: "o",
+    32: "u",
+    33: "[",
+    34: "i",
+    35: "p",
+    36: "return",
+    37: "l",
+    38: "j",
+    39: "'",
+    40: "k",
+    41: ";",
+    42: "\\",
+    43: ",",
+    44: "/",
+    45: "n",
+    46: "m",
+    47: ".",
+    48: "tab",
+    49: "space",
+    50: "`",
+    51: "delete",
+    53: "escape",
+    122: "f1",
+    120: "f2",
+    99: "f3",
+    118: "f4",
+    96: "f5",
+    97: "f6",
+    98: "f7",
+    100: "f8",
+    101: "f9",
+    109: "f10",
+    103: "f11",
+    111: "f12",
+    123: "left",
+    124: "right",
+    125: "down",
+    126: "up",
+}
 
 
 def cocoa_mods(flags):
-    return [n for bit, n in ((0x20000, "shift"), (0x40000, "ctrl"), (0x80000, "alt"),
-                             (0x100000, "cmd"), (0x800000, "fn")) if flags & bit]
+    return [
+        n
+        for bit, n in ((0x20000, "shift"), (0x40000, "ctrl"), (0x80000, "alt"), (0x100000, "cmd"), (0x800000, "fn"))
+        if flags & bit
+    ]
 
 
 HOTKEY_NAMES = {
-    7: "Focus menu bar", 8: "Focus Dock", 9: "Focus window toolbar", 10: "Focus floating window",
-    12: "Focus status menus", 27: "Cycle windows in app", 28: "Screenshot screen to file",
-    29: "Screenshot screen to clipboard", 30: "Screenshot area to file", 31: "Screenshot area to clipboard",
-    32: "Mission Control", 33: "Application windows", 34: "Mission Control (alt)", 36: "Show Desktop",
-    52: "Toggle Dock auto-hide", 57: "Focus Dock (alt)", 60: "Previous input source",
-    61: "Next input source", 64: "Spotlight search", 65: "Finder search window", 79: "Move left a space",
-    81: "Move right a space", 98: "Show help menu", 118: "Switch to Desktop 1", 119: "Switch to Desktop 2",
-    120: "Switch to Desktop 3", 121: "Switch to Desktop 4", 163: "Notification Center", 175: "Do Not Disturb",
-    184: "Screenshot / recording options", 190: "Quick Note",
+    7: "Focus menu bar",
+    8: "Focus Dock",
+    9: "Focus window toolbar",
+    10: "Focus floating window",
+    12: "Focus status menus",
+    27: "Cycle windows in app",
+    28: "Screenshot screen to file",
+    29: "Screenshot screen to clipboard",
+    30: "Screenshot area to file",
+    31: "Screenshot area to clipboard",
+    32: "Mission Control",
+    33: "Application windows",
+    34: "Mission Control (alt)",
+    36: "Show Desktop",
+    52: "Toggle Dock auto-hide",
+    57: "Focus Dock (alt)",
+    60: "Previous input source",
+    61: "Next input source",
+    64: "Spotlight search",
+    65: "Finder search window",
+    79: "Move left a space",
+    81: "Move right a space",
+    98: "Show help menu",
+    118: "Switch to Desktop 1",
+    119: "Switch to Desktop 2",
+    120: "Switch to Desktop 3",
+    121: "Switch to Desktop 4",
+    163: "Notification Center",
+    175: "Do Not Disturb",
+    184: "Screenshot / recording options",
+    190: "Quick Note",
 }
 
 
 # Apple labels no symbolic-hotkey IDs publicly. Only the *names* below are maintained by hand (community-documented);
 # the key combo and the enabled state are always read live from macOS (CoreGraphics), never typed in.
 SYSTEM_HOTKEY_NAMES = {
-    7: "Move focus to the menu bar", 8: "Move focus to the Dock", 27: "Move focus to next window in app",
-    28: "Screenshot: screen to file", 29: "Screenshot: screen to clipboard",
-    30: "Screenshot: selection to file", 31: "Screenshot: selection to clipboard",
-    32: "Mission Control", 33: "Application windows", 36: "Show Desktop", 52: "Turn Dock hiding on/off",
-    57: "Move focus to the status menus", 60: "Select previous input source",
-    61: "Select next input source in menu", 64: "Spotlight search", 65: "Finder search window",
-    79: "Move left a space", 81: "Move right a space", 98: "Show Help menu",
-    118: "Switch to Desktop 1", 119: "Switch to Desktop 2", 120: "Switch to Desktop 3", 121: "Switch to Desktop 4",
-    163: "Notification Center", 175: "Do Not Disturb", 184: "Screenshot and recording options", 190: "Quick Note",
+    7: "Move focus to the menu bar",
+    8: "Move focus to the Dock",
+    27: "Move focus to next window in app",
+    28: "Screenshot: screen to file",
+    29: "Screenshot: screen to clipboard",
+    30: "Screenshot: selection to file",
+    31: "Screenshot: selection to clipboard",
+    32: "Mission Control",
+    33: "Application windows",
+    36: "Show Desktop",
+    52: "Turn Dock hiding on/off",
+    57: "Move focus to the status menus",
+    60: "Select previous input source",
+    61: "Select next input source in menu",
+    64: "Spotlight search",
+    65: "Finder search window",
+    79: "Move left a space",
+    81: "Move right a space",
+    98: "Show Help menu",
+    118: "Switch to Desktop 1",
+    119: "Switch to Desktop 2",
+    120: "Switch to Desktop 3",
+    121: "Switch to Desktop 4",
+    163: "Notification Center",
+    175: "Do Not Disturb",
+    184: "Screenshot and recording options",
+    190: "Quick Note",
 }
 INCLUDE_UNNAMED = False  # set by --all-system
 
@@ -407,15 +608,39 @@ STANDARD_KEY_BINDING = Path("/System/Library/Frameworks/AppKit.framework/Resourc
 # Apple's article headings -> where the shortcut applies. "system" mixes Finder and OS-wide entries, so it is
 # never treated as globally active (avoids false conflicts).
 APPLE_SCOPES = {
-    "cut, copy, paste": "app", "sleep, log out": "system", "finder and system": "system",
-    "text-editing": "text", "vision": "accessibility", "keyboard focus": "accessibility",
-    "other accessibility": "accessibility", "accessibility": "accessibility",
+    "cut, copy, paste": "app",
+    "sleep, log out": "system",
+    "finder and system": "system",
+    "text-editing": "text",
+    "vision": "accessibility",
+    "keyboard focus": "accessibility",
+    "other accessibility": "accessibility",
+    "accessibility": "accessibility",
 }
-APPLE_MOD = {"command": "cmd", "control": "ctrl", "option": "alt", "shift": "shift", "fn": "fn", "globe": "fn",
-             "caps lock": "caps"}
-APPLE_KEY = {"space bar": "space", "esc": "escape", "delete": "backspace", "forward delete": "delete",
-             "return": "return", "enter": "return", "tab": "tab", "up arrow": "up", "down arrow": "down",
-             "left arrow": "left", "right arrow": "right", "power button": "power", "eject": "eject"}
+APPLE_MOD = {
+    "command": "cmd",
+    "control": "ctrl",
+    "option": "alt",
+    "shift": "shift",
+    "fn": "fn",
+    "globe": "fn",
+    "caps lock": "caps",
+}
+APPLE_KEY = {
+    "space bar": "space",
+    "esc": "escape",
+    "delete": "backspace",
+    "forward delete": "delete",
+    "return": "return",
+    "enter": "return",
+    "tab": "tab",
+    "up arrow": "up",
+    "down arrow": "down",
+    "left arrow": "left",
+    "right arrow": "right",
+    "power button": "power",
+    "eject": "eject",
+}
 APPLE_SKIP = re.compile(r"(?i)\b(while|click|drag|double|press twice|hold)\b|\bor\b.*\bwhile\b")
 _PAREN_CHAR = re.compile(r"[A-Za-z ]+\(([^\w\s])\)")
 
@@ -481,8 +706,13 @@ class _AppleParser(__import__("html.parser", fromlist=["HTMLParser"]).HTMLParser
         elif t == "li" and self.stack:
             it = self.stack.pop()
             if it["b"]:
-                self.rows.append({"section": self.sec, "combo": it["b"].strip().rstrip(":").strip(),
-                                  "desc": re.sub(r"\s+", " ", it["txt"]).strip(" :")})
+                self.rows.append(
+                    {
+                        "section": self.sec,
+                        "combo": it["b"].strip().rstrip(":").strip(),
+                        "desc": re.sub(r"\s+", " ", it["txt"]).strip(" :"),
+                    }
+                )
 
     def handle_data(self, d):
         if self.h is not None:
@@ -504,6 +734,7 @@ def parse_apple_html(html_text):
 def _fetch(url, host):
     """GET url over https from exactly `host`; bounded size/time; refuses redirects to other hosts."""
     import urllib.parse, urllib.request
+
     u = urllib.parse.urlparse(url)
     if u.scheme != "https" or u.hostname != host:
         raise ValueError(f"refusing to fetch {url!r}: only https://{host}/ is allowed")
@@ -519,11 +750,20 @@ def _fetch(url, host):
 
 def _save_doc(name, url, raw, rows, min_rows, extra=None):
     import hashlib, time
+
     if len(rows) < min_rows:
         raise ValueError(f"only {len(rows)} rows parsed - page layout probably changed; keeping old data")
-    doc = {"meta": {"source": url, "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "sha256": hashlib.sha256(raw).hexdigest(), "kb_version": VERSION, "rows": len(rows),
-                    **(extra or {})}, "rows": rows}
+    doc = {
+        "meta": {
+            "source": url,
+            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "kb_version": VERSION,
+            "rows": len(rows),
+            **(extra or {}),
+        },
+        "rows": rows,
+    }
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     tmp = DATA_DIR / (name + ".tmp")
     tmp.write_text(json.dumps(doc, indent=1, ensure_ascii=False) + "\n")
@@ -563,17 +803,44 @@ def load_apple_docs():
             n = apple_combo(c)
             if n is None:
                 continue
-            keys = pretty(n) if re.fullmatch(r"(?:[a-z]+\+)*(?:.|[a-z]+\d*|f\d+)", n) and "-" not in n.split("+")[-1] else \
-                "".join(MOD_SYM.get(m, m) for m in n.split("+")[:-1]) + n.split("+")[-1].replace("-", " ").title()
-            out.append(Binding("macos", keys, desc[:220] or row["combo"], n, scope, c,
-                               f"{meta.get('source', APPLE_URL)} (fetched {meta.get('fetched_at', '?')[:10]})",
-                               f"apple support {row['section']}", f"Apple: {row['section']}"))
+            keys = (
+                pretty(n)
+                if re.fullmatch(r"(?:[a-z]+\+)*(?:.|[a-z]+\d*|f\d+)", n) and "-" not in n.split("+")[-1]
+                else "".join(MOD_SYM.get(m, m) for m in n.split("+")[:-1]) + n.split("+")[-1].replace("-", " ").title()
+            )
+            out.append(
+                Binding(
+                    "macos",
+                    keys,
+                    desc[:220] or row["combo"],
+                    n,
+                    scope,
+                    c,
+                    f"{meta.get('source', APPLE_URL)} (fetched {meta.get('fetched_at', '?')[:10]})",
+                    f"apple support {row['section']}",
+                    f"Apple: {row['section']}",
+                )
+            )
     return out
 
 
-_UNI = {0xF700: "up", 0xF701: "down", 0xF702: "left", 0xF703: "right", 0xF728: "delete", 0xF729: "home",
-        0xF72B: "end", 0xF72C: "pageup", 0xF72D: "pagedown", 0x7F: "backspace", 9: "tab", 10: "return",
-        13: "return", 27: "escape", 32: "space"}
+_UNI = {
+    0xF700: "up",
+    0xF701: "down",
+    0xF702: "left",
+    0xF703: "right",
+    0xF728: "delete",
+    0xF729: "home",
+    0xF72B: "end",
+    0xF72C: "pageup",
+    0xF72D: "pagedown",
+    0x7F: "backspace",
+    9: "tab",
+    10: "return",
+    13: "return",
+    27: "escape",
+    32: "space",
+}
 _UNI.update({0xF704 + i: f"f{i + 1}" for i in range(12)})
 
 
@@ -618,9 +885,20 @@ def load_standard_key_binding(path=None):
             if not isinstance(sel, str) or sel in ("noop:", "noop"):
                 continue
             disp = " then ".join(pretty(x) for x in seq)
-            out.append(Binding("macos", disp, _humanize_selector(sel), seq[0] if len(seq) == 1 else "",
-                               "text", sel if isinstance(v, str) else str(v), str(p),
-                               "cocoa text editing", "Apple: AppKit StandardKeyBinding.dict"))
+            out.append(
+                Binding(
+                    "macos",
+                    disp,
+                    _humanize_selector(sel),
+                    seq[0] if len(seq) == 1 else "",
+                    "text",
+                    sel if isinstance(v, str) else str(v),
+                    str(p),
+                    "cocoa text editing",
+                    "Apple: AppKit StandardKeyBinding.dict",
+                )
+            )
+
     walk(d, [])
     return out
 
@@ -631,13 +909,18 @@ MENU_MOD = {"@": "cmd", "^": "ctrl", "~": "alt", "$": "shift"}
 def live_symbolic_hotkeys():
     """Effective system shortcuts as macOS itself resolves them: (enabled, disabled) dicts, or None."""
     import ctypes
+
     try:
         cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
         get, enabled = cg.CGSGetSymbolicHotKeyValue, cg.CGSIsSymbolicHotKeyEnabled
     except (OSError, AttributeError):
         return None
-    get.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint16), ctypes.POINTER(ctypes.c_uint16),
-                    ctypes.POINTER(ctypes.c_uint32)]
+    get.argtypes = [
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_uint16),
+        ctypes.POINTER(ctypes.c_uint16),
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
     get.restype = ctypes.c_int
     enabled.argtypes, enabled.restype = [ctypes.c_int], ctypes.c_bool
     res, off = {}, {}
@@ -696,8 +979,19 @@ def load_macos():
                 hidden += 1
                 continue
             name = f"System shortcut #{k} (not named by Apple)"
-        out.append(Binding("macos", pretty(n), name, n, "global", f"symbolichotkey {k}", src, "system shortcut",
-                           "effective value as macOS resolves it"))
+        out.append(
+            Binding(
+                "macos",
+                pretty(n),
+                name,
+                n,
+                "global",
+                f"symbolichotkey {k}",
+                src,
+                "system shortcut",
+                "effective value as macOS resolves it",
+            )
+        )
     if hidden:
         WARNINGS_INFO.append(f"{hidden} unnamed system shortcuts hidden (use --all-system to include)")
     off = {_combo_of(c, f) for k, (c, f) in disabled.items() if k in SYSTEM_HOTKEY_NAMES}
@@ -730,8 +1024,19 @@ def load_app_menu_shortcuts():
             mods = [MENU_MOD[c] for c in spec if c in MENU_MOD]
             key = "".join(c for c in spec if c not in MENU_MOD)
             n = norm_combo(mods, key)
-            out.append(Binding("macos", pretty(n), f"Menu item “{title}”", n, f"app:{app}",
-                               spec, str(f), "app shortcut custom menu", "custom app shortcut"))
+            out.append(
+                Binding(
+                    "macos",
+                    pretty(n),
+                    f"Menu item “{title}”",
+                    n,
+                    f"app:{app}",
+                    spec,
+                    str(f),
+                    "app shortcut custom menu",
+                    "custom app shortcut",
+                )
+            )
     return out
 
 
@@ -751,8 +1056,7 @@ def load_default_key_binding():
                 mods.append(MENU_MOD[c])
         key = "".join(c for c in k if c not in MENU_MOD)
         n = norm_combo(mods, key)
-        out.append(Binding("macos", pretty(n), f"Text binding: {v}", n, "text", str(v), str(p),
-                           "text editing custom"))
+        out.append(Binding("macos", pretty(n), f"Text binding: {v}", n, "text", str(v), str(p), "text editing custom"))
     return out
 
 
@@ -761,8 +1065,7 @@ def load_rectangle():
     if not DARWIN:
         return out
     try:
-        r = subprocess.run([DEFAULTS_BIN, "export", "com.knollsoft.Rectangle", "-"],
-                           capture_output=True, timeout=5)
+        r = subprocess.run([DEFAULTS_BIN, "export", "com.knollsoft.Rectangle", "-"], capture_output=True, timeout=5)
         d = plistlib.loads(r.stdout)
     except Exception:
         return out
@@ -770,8 +1073,19 @@ def load_rectangle():
         if isinstance(v, dict) and "keyCode" in v and "modifierFlags" in v:
             name = re.sub(r"([A-Z])", r" \1", k).strip().lower().capitalize()
             n = norm_combo(cocoa_mods(v["modifierFlags"]), KEYCODES.get(v["keyCode"], f"keycode{v['keyCode']}"))
-            out.append(Binding("rectangle", pretty(n), name, n, "global", k, "defaults com.knollsoft.Rectangle",
-                               "window snapping", "custom shortcut; other actions use Rectangle's defaults"))
+            out.append(
+                Binding(
+                    "rectangle",
+                    pretty(n),
+                    name,
+                    n,
+                    "global",
+                    k,
+                    "defaults com.knollsoft.Rectangle",
+                    "window snapping",
+                    "custom shortcut; other actions use Rectangle's defaults",
+                )
+            )
     return out
 
 
@@ -780,8 +1094,12 @@ def load_raycast():
     if not DARWIN:
         return out
     try:
-        r = subprocess.run([DEFAULTS_BIN, "read", "com.raycast.macos", "raycastGlobalHotkey"],
-                           capture_output=True, text=True, timeout=5)
+        r = subprocess.run(
+            [DEFAULTS_BIN, "read", "com.raycast.macos", "raycastGlobalHotkey"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
         spec = r.stdout.strip()
     except Exception:
         return out
@@ -789,9 +1107,19 @@ def load_raycast():
     if m:
         mods = [x for x in m[1].split("-") if x]
         n = norm_combo(mods, KEYCODES.get(int(m[2]), f"keycode{m[2]}"))
-        out.append(Binding("raycast", pretty(n), "Open Raycast", n, "global", spec,
-                           "defaults com.raycast.macos", "launcher",
-                           "other Raycast hotkeys live in its own store and aren't readable"))
+        out.append(
+            Binding(
+                "raycast",
+                pretty(n),
+                "Open Raycast",
+                n,
+                "global",
+                spec,
+                "defaults com.raycast.macos",
+                "launcher",
+                "other Raycast hotkeys live in its own store and aren't readable",
+            )
+        )
     return out
 
 
@@ -802,8 +1130,18 @@ VSC_HOST = "code.visualstudio.com"
 VSC_JSON = "vscode-default-keybindings.json"
 VSC_APP = Path("/Applications/Visual Studio Code.app")
 VSC_USER = HOME / "Library/Application Support/Code/User"
-VSC_ARROWS = {"↑": "up", "↓": "down", "←": "left", "→": "right", "⏎": "enter", "⌫": "backspace", "⌦": "delete",
-              "⇥": "tab", "⎋": "escape", "␣": "space"}
+VSC_ARROWS = {
+    "↑": "up",
+    "↓": "down",
+    "←": "left",
+    "→": "right",
+    "⏎": "enter",
+    "⌫": "backspace",
+    "⌦": "delete",
+    "⇥": "tab",
+    "⎋": "escape",
+    "␣": "space",
+}
 VSC_MODS = {"⌃": "ctrl", "⌥": "alt", "⇧": "shift", "⌘": "cmd"}
 
 
@@ -863,8 +1201,14 @@ class _VscParser(__import__("html.parser", fromlist=["HTMLParser"]).HTMLParser):
         elif t == "tr" and self.row is not None:
             c = self.row["cells"]
             if len(c) >= 3 and c[0] != "Command":
-                self.rows.append({"section": self.sec, "title": c[0], "command": c[2],
-                                  "osx": self.row["osx"][0] if self.row["osx"] else ""})
+                self.rows.append(
+                    {
+                        "section": self.sec,
+                        "title": c[0],
+                        "command": c[2],
+                        "osx": self.row["osx"][0] if self.row["osx"] else "",
+                    }
+                )
             self.row = None
 
     def handle_data(self, d):
@@ -959,8 +1303,19 @@ def load_vscode():
                 removed.add((cmd[1:], tuple(steps)))
                 continue
             when = f"  when: {e['when']}" if e.get("when") else ""
-            out.append(Binding("vscode", vsc_display(steps), f"{cmd}{when}", steps[0] if len(steps) == 1 else "",
-                               "vscode", cmd, f"{f}", "vscode user custom", f"set in {label}"))
+            out.append(
+                Binding(
+                    "vscode",
+                    vsc_display(steps),
+                    f"{cmd}{when}",
+                    steps[0] if len(steps) == 1 else "",
+                    "vscode",
+                    cmd,
+                    f"{f}",
+                    "vscode user custom",
+                    f"set in {label}",
+                )
+            )
     # 2) official defaults (synced from Microsoft's reference page)
     if docs.exists():
         d = json.loads(docs.read_text())
@@ -971,9 +1326,17 @@ def load_vscode():
             steps = vsc_mac_chord(r["osx"])
             if not steps:
                 continue
-            b = Binding("vscode", vsc_display(steps), r["title"], steps[0] if len(steps) == 1 else "", "vscode",
-                        r["command"], f"{meta.get('source', VSC_URL)} (fetched {meta.get('fetched_at', '?')[:10]})",
-                        f"vscode default {r['section']}", f"VS Code default: {r['section']}")
+            b = Binding(
+                "vscode",
+                vsc_display(steps),
+                r["title"],
+                steps[0] if len(steps) == 1 else "",
+                "vscode",
+                r["command"],
+                f"{meta.get('source', VSC_URL)} (fetched {meta.get('fetched_at', '?')[:10]})",
+                f"vscode default {r['section']}",
+                f"VS Code default: {r['section']}",
+            )
             if (r["command"], tuple(steps)) in removed:
                 b.note = "removed by your keybindings.json"
             out.append(b)
@@ -994,8 +1357,11 @@ def load_vscode():
             kbs = (pkg.get("contributes") or {}).get("keybindings") or []
             if isinstance(kbs, dict):
                 kbs = [kbs]
-            titles = {c.get("command"): _nls(pj.parent, c.get("title", "")) for c in
-                      (pkg.get("contributes") or {}).get("commands", []) if isinstance(c, dict)}
+            titles = {
+                c.get("command"): _nls(pj.parent, c.get("title", ""))
+                for c in (pkg.get("contributes") or {}).get("commands", [])
+                if isinstance(c, dict)
+            }
             ext = pkg.get("displayName") or pkg.get("name") or pj.parent.name
             ext = _nls(pj.parent, ext)
             for e in kbs:
@@ -1007,9 +1373,19 @@ def load_vscode():
                     continue
                 steps = vsc_key(str(key))
                 when = f"  when: {e['when']}" if e.get("when") else ""
-                out.append(Binding("vscode", vsc_display(steps), f"{titles.get(cmd) or cmd}{when}",
-                                   steps[0] if len(steps) == 1 else "", "vscode", str(cmd), str(pj),
-                                   f"vscode extension {ext}", f"extension: {ext}"))
+                out.append(
+                    Binding(
+                        "vscode",
+                        vsc_display(steps),
+                        f"{titles.get(cmd) or cmd}{when}",
+                        steps[0] if len(steps) == 1 else "",
+                        "vscode",
+                        str(cmd),
+                        str(pj),
+                        f"vscode extension {ext}",
+                        f"extension: {ext}",
+                    )
+                )
     return out
 
 
@@ -1022,19 +1398,39 @@ def load_zsh():
             m = re.match(r"\s*bindkey\s+(?:-\w\s+)?'([^']+)'\s+(\S+)", line)
             if m:
                 k = m[1].replace("^x", "Ctrl-X ").replace("^X", "Ctrl-X ").replace("^e", "e")
-                out.append(Binding("zsh", k.replace("Ctrl-X e", "Ctrl-X e").replace("^", "Ctrl-"),
-                                   m[2].replace("-", " ").capitalize() + " (zle widget)", "", "shell",
-                                   line.strip(), f"{p}:{i}"))
+                out.append(
+                    Binding(
+                        "zsh",
+                        k.replace("Ctrl-X e", "Ctrl-X e").replace("^", "Ctrl-"),
+                        m[2].replace("-", " ").capitalize() + " (zle widget)",
+                        "",
+                        "shell",
+                        line.strip(),
+                        f"{p}:{i}",
+                    )
+                )
         break
     return out
 
 
-LOADERS = [load_aerospace, load_skhd, load_tmux, load_herdr, load_ghostty, load_rectangle, load_macos, load_raycast, load_vscode, load_zsh]
+LOADERS = [
+    load_aerospace,
+    load_skhd,
+    load_tmux,
+    load_herdr,
+    load_ghostty,
+    load_rectangle,
+    load_macos,
+    load_raycast,
+    load_vscode,
+    load_zsh,
+]
 
 
 def load_all(debug=False):
     """Run every source concurrently, each bounded by LOADER_BUDGET, so one stalled read can never hang kb."""
     import threading, time
+
     results, timings = {}, {}
 
     def work(fn):
@@ -1062,8 +1458,10 @@ def load_all(debug=False):
                 print(f"kb: still reading {', '.join(slow)}… (gives up after {LOADER_BUDGET:g}s)", file=sys.stderr)
         if t.is_alive():
             STUCK.append(fn.__name__)
-            WARNINGS.append(f"{fn.__name__[5:]}: no answer after {LOADER_BUDGET:g}s - skipped "
-                            f"(slow disk, security scanner or a stalled system call; KB_LOADER_TIMEOUT=60 waits longer)")
+            WARNINGS.append(
+                f"{fn.__name__[5:]}: no answer after {LOADER_BUDGET:g}s - skipped "
+                f"(slow disk, security scanner or a stalled system call; KB_LOADER_TIMEOUT=60 waits longer)"
+            )
     out = []
     for fn in LOADERS:  # stable order regardless of which thread finished first
         out += results.get(fn.__name__, [])
@@ -1079,8 +1477,13 @@ def load_all(debug=False):
 
 # ---------------------------------------------------------------- query
 
-MOD_WORDS = {"ctrl": "ctrl control ⌃", "alt": "alt opt option ⌥", "shift": "shift ⇧",
-             "cmd": "cmd command super ⌘", "fn": "fn globe"}
+MOD_WORDS = {
+    "ctrl": "ctrl control ⌃",
+    "alt": "alt opt option ⌥",
+    "shift": "shift ⇧",
+    "cmd": "cmd command super ⌘",
+    "fn": "fn globe",
+}
 _DISPLAY_MODS = (("⌃", "ctrl"), ("⌥", "alt"), ("⇧", "shift"), ("⌘", "cmd"))
 
 
@@ -1178,23 +1581,37 @@ def shadows(items):
         if b.tool == "macos" and b.scope in APP_SCOPES and b.norm:
             std.setdefault(b.norm, []).append(b)
     live = lambda lst: [x for x in lst if "disabled" not in x.note]
-    return [(g, live(std[g.norm])) for g in items
-            if g.tool in GLOBAL_TOOLS - {"macos"} and g.scope == "global" and live(std.get(g.norm, []))]
+    return [
+        (g, live(std[g.norm]))
+        for g in items
+        if g.tool in GLOBAL_TOOLS - {"macos"} and g.scope == "global" and live(std.get(g.norm, []))
+    ]
 
 
 # ---------------------------------------------------------------- output
 
 USE_COLOR = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 C = lambda code, s: f"\033[{code}m{s}\033[0m" if USE_COLOR else s
-TOOL_COLOR = {"aerospace": "38;5;111", "skhd": "38;5;180", "tmux": "38;5;114", "herdr": "38;5;176",
-              "ghostty": "38;5;215", "rectangle": "38;5;80", "macos": "38;5;252", "raycast": "38;5;203",
-              "zsh": "38;5;222", "vscode": "38;5;75"}
+TOOL_COLOR = {
+    "aerospace": "38;5;111",
+    "skhd": "38;5;180",
+    "tmux": "38;5;114",
+    "herdr": "38;5;176",
+    "ghostty": "38;5;215",
+    "rectangle": "38;5;80",
+    "macos": "38;5;252",
+    "raycast": "38;5;203",
+    "zsh": "38;5;222",
+    "vscode": "38;5;75",
+}
 
 
 def row(b, kw=None, tw=None):
     t = C(TOOL_COLOR.get(b.tool, "37"), f"{b.tool:<{tw or 9}}")
     k = C("1", f"{b.keys:<{kw or 14}}")
-    ctx = C("2", f" [{b.scope}]") if b.scope not in ("global", "prefix", b.tool) and f"[{b.scope}]" not in b.keys else ""
+    ctx = (
+        C("2", f" [{b.scope}]") if b.scope not in ("global", "prefix", b.tool) and f"[{b.scope}]" not in b.keys else ""
+    )
     warn = C("33", f"  ⚠ {b.note}") if b.note and ("overridden" in b.note or "disabled" in b.note) else ""
     d = b.desc if len(b.desc) <= 110 else b.desc[:107].rstrip() + "…"
     return f"{t}  {k}  {d}{ctx}{warn}"
@@ -1242,9 +1659,12 @@ def report_conflicts(items):
 def doctor(items):
     """Which sources exist, how many bindings each produced, and what failed to parse."""
     srcs = {
-        "aerospace": CFG / "aerospace/aerospace.toml", "skhd": CFG / "skhd/skhdrc",
-        "tmux": CFG / "tmux/tmux.conf", "herdr": CFG / "herdr/config.toml",
-        "ghostty": CFG / "ghostty/config", "zsh": HOME / ".zshrc",
+        "aerospace": CFG / "aerospace/aerospace.toml",
+        "skhd": CFG / "skhd/skhdrc",
+        "tmux": CFG / "tmux/tmux.conf",
+        "herdr": CFG / "herdr/config.toml",
+        "ghostty": CFG / "ghostty/config",
+        "zsh": HOME / ".zshrc",
     }
     counts = {}
     for b in items:
@@ -1262,16 +1682,20 @@ def doctor(items):
     ap_meta = data_file(APPLE_JSON)
     if ap_meta.exists():
         m = json.loads(ap_meta.read_text()).get("meta", {})
-        print(f"  {C('2', 'apple')}    {m.get('rows', '?')} rows from {m.get('source')} fetched {m.get('fetched_at', '?')[:10]}")
+        print(
+            f"  {C('2', 'apple')}    {m.get('rows', '?')} rows from {m.get('source')} fetched {m.get('fetched_at', '?')[:10]}"
+        )
     vm = data_file(VSC_JSON)
     if vm.exists():
         m = json.loads(vm.read_text()).get("meta", {})
         inst = vscode_installed_version()
-        print(f"  {C('2', 'vscode')}   {m.get('rows', '?')} default rows from {m.get('source')} fetched {m.get('fetched_at', '?')[:10]}"
-              f"  (installed VS Code {inst or 'not found'})")
+        print(
+            f"  {C('2', 'vscode')}   {m.get('rows', '?')} default rows from {m.get('source')} fetched {m.get('fetched_at', '?')[:10]}"
+            f"  (installed VS Code {inst or 'not found'})"
+        )
     for w in WARNINGS_INFO:
         print(f"  {C('2', 'note')}     {w}")
-    print("\nread-only: kb never writes to your configs." )
+    print("\nread-only: kb never writes to your configs.")
     return 1 if WARNINGS else 0
 
 
@@ -1291,10 +1715,26 @@ def interactive(items):
         with os.fdopen(fd, "w") as f:
             json.dump([asdict(b) for b in items], f)
         exe = shlex.quote(os.path.abspath(sys.argv[0]))
-        cmd = [fzf, "--ansi", "--delimiter", "\t", "--with-nth", "2..", "--layout", "reverse",
-               "--prompt", "keybinding> ", "--header", "type to search · e.g. alt t, tmux split · ctrl-/ preview",
-               "--preview", f"{sys.executable} {exe} --detail {{1}} --snapshot {shlex.quote(str(snap))}",
-               "--preview-window", "right:45%:wrap", "--bind", "ctrl-/:toggle-preview"]
+        cmd = [
+            fzf,
+            "--ansi",
+            "--delimiter",
+            "\t",
+            "--with-nth",
+            "2..",
+            "--layout",
+            "reverse",
+            "--prompt",
+            "keybinding> ",
+            "--header",
+            "type to search · e.g. alt t, tmux split · ctrl-/ preview",
+            "--preview",
+            f"{sys.executable} {exe} --detail {{1}} --snapshot {shlex.quote(str(snap))}",
+            "--preview-window",
+            "right:45%:wrap",
+            "--bind",
+            "ctrl-/:toggle-preview",
+        ]
         subprocess.run(cmd, input="\n".join(lines), text=True)
     USE_COLOR = sys.stdout.isatty()
 
@@ -1317,25 +1757,47 @@ def _mod_arg(value):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="kb", description="Browse and search all keybindings.",
-                                 formatter_class=argparse.RawDescriptionHelpFormatter,
-                                 epilog=__doc__.split("\n", 2)[2] + "\nexit codes: 0 ok · 1 no match / conflicts found / doctor warnings · 2 usage error")
+    ap = argparse.ArgumentParser(
+        prog="kb",
+        description="Browse and search all keybindings.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__.split("\n", 2)[2]
+        + "\nexit codes: 0 ok · 1 no match / conflicts found / doctor warnings · 2 usage error",
+    )
     ap.add_argument("query", nargs="*", help="words that must all match")
     ap.add_argument("-t", "--tool", action="append", help="only this tool (repeatable)")
     ap.add_argument("-k", "--key", help="look up a key combo, e.g. opt+t, 'alt-shift-h', ⌘⇧p")
-    ap.add_argument("-m", "--mod", action="append", type=_mod_arg, metavar="MOD",
-                    help="only combos that use this modifier: ctrl, alt/option, shift, cmd/command, fn "
-                         "(repeatable or comma-separated; all must be present)")
-    ap.add_argument("--by", choices=["all", "keys", "name"], default="all",
-                    help="what the search words match: the key combo itself, what it does (name), or everything")
-    ap.add_argument("-c", "--conflicts", action="store_true", help="show conflicts and shadowed shortcuts (exit 1 on conflict)")
+    ap.add_argument(
+        "-m",
+        "--mod",
+        action="append",
+        type=_mod_arg,
+        metavar="MOD",
+        help="only combos that use this modifier: ctrl, alt/option, shift, cmd/command, fn "
+        "(repeatable or comma-separated; all must be present)",
+    )
+    ap.add_argument(
+        "--by",
+        choices=["all", "keys", "name"],
+        default="all",
+        help="what the search words match: the key combo itself, what it does (name), or everything",
+    )
+    ap.add_argument(
+        "-c", "--conflicts", action="store_true", help="show conflicts and shadowed shortcuts (exit 1 on conflict)"
+    )
     ap.add_argument("--tools", action="store_true", help="list sources")
     ap.add_argument("--doctor", action="store_true", help="check sources and parse warnings")
     ap.add_argument("--json", action="store_true", help="JSON output (schema_version %d)" % SCHEMA_VERSION)
-    ap.add_argument("--sync-apple", action="store_true",
-                    help="download Apple's 'Mac keyboard shortcuts' article (support.apple.com) into the local data file")
-    ap.add_argument("--sync-vscode", action="store_true",
-                    help="download VS Code's default keyboard shortcuts (code.visualstudio.com)")
+    ap.add_argument(
+        "--sync-apple",
+        action="store_true",
+        help="download Apple's 'Mac keyboard shortcuts' article (support.apple.com) into the local data file",
+    )
+    ap.add_argument(
+        "--sync-vscode",
+        action="store_true",
+        help="download VS Code's default keyboard shortcuts (code.visualstudio.com)",
+    )
     ap.add_argument("--sync", action="store_true", help="refresh every downloaded source (Apple + VS Code)")
     ap.add_argument("--debug", action="store_true", help="print how long each source took (to stderr)")
     ap.add_argument("--all-system", action="store_true", help="also list system shortcuts Apple doesn't name")
@@ -1352,12 +1814,17 @@ def main(argv=None):
         return 0
     if a.sync_apple or a.sync_vscode or a.sync:
         rc = 0
-        for flag, fn, name in ((a.sync_apple or a.sync, sync_apple, APPLE_JSON), (a.sync_vscode or a.sync, sync_vscode, VSC_JSON)):
+        for flag, fn, name in (
+            (a.sync_apple or a.sync, sync_apple, APPLE_JSON),
+            (a.sync_vscode or a.sync, sync_vscode, VSC_JSON),
+        ):
             if not flag:
                 continue
             try:
                 m = fn()["meta"]
-                print(f"fetched {m['rows']} rows from {m['source']}\n  sha256 {m['sha256'][:16]}…  saved to {DATA_DIR / name}")
+                print(
+                    f"fetched {m['rows']} rows from {m['source']}\n  sha256 {m['sha256'][:16]}…  saved to {DATA_DIR / name}"
+                )
             except Exception as e:
                 print(f"kb: sync of {name} failed: {e}", file=sys.stderr)
                 rc = 1
@@ -1378,8 +1845,11 @@ def main(argv=None):
         return 1 if report_conflicts(items) else 0
     res = search(items, a.query, a.tool, a.key, [m for grp in (a.mod or []) for m in grp], a.by)
     if a.json:
-        print(json.dumps({"schema_version": SCHEMA_VERSION, "bindings": [asdict(b) for b in res]},
-                         indent=2, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"schema_version": SCHEMA_VERSION, "bindings": [asdict(b) for b in res]}, indent=2, ensure_ascii=False
+            )
+        )
         return 0 if res else 1
     tty = sys.stdout.isatty() and sys.stdin.isatty() and not a.no_fzf
     filtered = bool(a.query or a.key or a.tool or a.mod)

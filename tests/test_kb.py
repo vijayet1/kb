@@ -1,5 +1,7 @@
 """Run: uv run python -m unittest discover -s tests -v   (or: make test)"""
+
 import sys
+
 sys.dont_write_bytecode = True
 import json, os, stat, subprocess, sys, tempfile, textwrap, unittest
 from pathlib import Path
@@ -60,8 +62,12 @@ class Security(unittest.TestCase):
         self.assertNotIn("\x07", b.desc)
 
     def test_secrets_redacted(self):
-        for raw in ("curl -H 'Authorization: Bearer abc123def456' x", "run --token=supersecret", "API_KEY=hunter2 cmd",
-                    "echo ghp_" + "a" * 30):
+        for raw in (
+            "curl -H 'Authorization: Bearer abc123def456' x",
+            "run --token=supersecret",
+            "API_KEY=hunter2 cmd",
+            "echo ghp_" + "a" * 30,
+        ):
             b = kb.Binding("x", "k", "d", raw=raw)
             self.assertIn("«redacted»", b.raw, raw)
             self.assertNotIn("supersecret", b.raw)
@@ -84,14 +90,17 @@ class Security(unittest.TestCase):
 
 class Parsers(Sandbox):
     def test_aerospace(self):
-        self.write("aerospace/aerospace.toml", """
+        self.write(
+            "aerospace/aerospace.toml",
+            """
             [mode.main.binding]
             alt-h = 'focus left'
             alt-shift-1 = 'move-node-to-workspace 1 --focus-follows-window'
             alt-w = 'exec-and-forget open -a Ghostty'
             [mode.service.binding]
             esc = ['reload-config', 'mode main']
-        """)
+        """,
+        )
         by = {b.keys: b for b in kb.load_aerospace()}
         self.assertEqual(by["⌥H"].desc, "Focus window left")
         self.assertEqual(by["⌥⇧1"].desc, "Send window to workspace 1 and follow")
@@ -99,22 +108,28 @@ class Parsers(Sandbox):
         self.assertEqual(by["⎋"].scope, "mode:service")
 
     def test_skhd(self):
-        self.write("skhd/skhdrc", """
+        self.write(
+            "skhd/skhdrc",
+            """
             # comment
             alt - t : open -a Ghostty
             shift + alt - h : echo hi
-        """)
+        """,
+        )
         got = {b.norm: b.desc for b in kb.load_skhd()}
         self.assertEqual(got["alt+t"], "Open Ghostty")
         self.assertIn("alt+shift+h", got)
 
     def test_tmux_prefix_flags_and_override(self):
-        self.write("tmux/tmux.reset.conf", """
+        self.write(
+            "tmux/tmux.reset.conf",
+            """
             bind -r -T prefix - resize-pane -D 7
             bind l refresh-client
             bind l select-pane -R
             bind v split-window -h
-        """)
+        """,
+        )
         self.write("tmux/tmux.conf", "set -g prefix ^A\n")
         bs = {(b.keys, b.desc): b for b in kb.load_tmux()}
         self.assertIn(("Ctrl-A › -", "Resize pane down by 7"), bs)
@@ -177,13 +192,24 @@ class AppleDocs(Sandbox):
         self.assertEqual(kb.apple_combo("Option–Brightness Up"), "alt+brightness-up")
 
     def test_mouse_and_modifier_only_rows_rejected(self):
-        for t in ("Option key while dragging", "Command-click a window title", "Option", "Command + Command (press twice)"):
+        for t in (
+            "Option key while dragging",
+            "Command-click a window title",
+            "Option",
+            "Command + Command (press twice)",
+        ):
             self.assertIsNone(kb.apple_combo(t), t)
 
     def test_html_parse_and_alternatives(self):
         rows = kb.parse_apple_html(APPLE_HTML)
-        self.assertEqual(rows[0], {"section": "Cut, copy, paste, and other common shortcuts",
-                                   "combo": "Command-X", "desc": "Cut the selected item."})
+        self.assertEqual(
+            rows[0],
+            {
+                "section": "Cut, copy, paste, and other common shortcuts",
+                "combo": "Command-X",
+                "desc": "Cut the selected item.",
+            },
+        )
         combos, desc = kb.apple_split_alternatives("Control-F2", "or Fn-Control-F2: Move focus to the menu bar.")
         self.assertEqual(combos, ["Control-F2", "Fn-Control-F2"])
         self.assertEqual(desc, "Move focus to the menu bar.")
@@ -191,13 +217,18 @@ class AppleDocs(Sandbox):
     def test_loader_uses_sections_and_keeps_provenance(self):
         kb.DATA_DIR = self.home / "data"
         kb.DATA_DIR.mkdir()
-        doc = {"meta": {"source": kb.APPLE_URL, "fetched_at": "2026-01-02T00:00:00Z"}, "rows": kb.parse_apple_html(APPLE_HTML)}
+        doc = {
+            "meta": {"source": kb.APPLE_URL, "fetched_at": "2026-01-02T00:00:00Z"},
+            "rows": kb.parse_apple_html(APPLE_HTML),
+        }
         (kb.DATA_DIR / kb.APPLE_JSON).write_text(json.dumps(doc))
         got = kb.load_apple_docs()
         norms = {(b.norm, b.scope) for b in got}
         self.assertIn(("cmd+x", "app"), norms)
         self.assertIn(("ctrl+f2", "system"), norms)
-        self.assertIn(("fn+ctrl+f2".replace("fn+ctrl", "ctrl+fn"), "system"), norms)  # alternative from 'or Fn-Control-F2'
+        self.assertIn(
+            ("fn+ctrl+f2".replace("fn+ctrl", "ctrl+fn"), "system"), norms
+        )  # alternative from 'or Fn-Control-F2'
         self.assertNotIn("cmd+z", {b.norm for b in got})  # unknown section ignored
         self.assertTrue(all(kb.APPLE_URL in b.src for b in got))
 
@@ -207,8 +238,12 @@ class AppleDocs(Sandbox):
         self.assertTrue(any("sync-apple" in w for w in kb.WARNINGS))
 
     def test_sync_only_talks_to_apple_over_https(self):
-        for url in ("http://support.apple.com/en-us/102650", "https://evil.example/102650",
-                    "https://support.apple.com.evil.example/x", "file:///etc/passwd"):
+        for url in (
+            "http://support.apple.com/en-us/102650",
+            "https://evil.example/102650",
+            "https://support.apple.com.evil.example/x",
+            "file:///etc/passwd",
+        ):
             with self.assertRaises(ValueError, msg=url):
                 kb.sync_apple(url)
 
@@ -216,10 +251,20 @@ class AppleDocs(Sandbox):
 class KeyBindingDict(Sandbox):
     def test_parse_standard_key_binding(self):
         import plistlib
+
         p = self.home / "skb.dict"
-        p.write_bytes(plistlib.dumps({"^a": "moveToBeginningOfParagraph:", "~\uf702": "moveWordBackward:",
-                                      "^V": "pageDownAndModifySelection:", "~\uf714": "noop:",
-                                      "^k": {"^b": "deleteBackward:"}}, fmt=plistlib.FMT_BINARY))
+        p.write_bytes(
+            plistlib.dumps(
+                {
+                    "^a": "moveToBeginningOfParagraph:",
+                    "~\uf702": "moveWordBackward:",
+                    "^V": "pageDownAndModifySelection:",
+                    "~\uf714": "noop:",
+                    "^k": {"^b": "deleteBackward:"},
+                },
+                fmt=plistlib.FMT_BINARY,
+            )
+        )
         got = {b.keys: b for b in kb.load_standard_key_binding(p)}
         self.assertEqual(got["⌃A"].desc, "Move to beginning of paragraph")
         self.assertEqual(got["⌥←"].norm, "alt+left")
@@ -229,7 +274,9 @@ class KeyBindingDict(Sandbox):
         self.assertEqual(got["⌃K then ⌃B"].norm, "")
 
     def test_disabled_system_shortcut_does_not_count_as_shadow(self):
-        std = kb.Binding("macos", "⌘Space", "Spotlight", "cmd+space", "app", note="this system shortcut is disabled on this Mac")
+        std = kb.Binding(
+            "macos", "⌘Space", "Spotlight", "cmd+space", "app", note="this system shortcut is disabled on this Mac"
+        )
         mine = kb.Binding("raycast", "⌘Space", "Open Raycast", "cmd+space", "global")
         self.assertEqual(kb.shadows([std, mine]), [])
 
@@ -268,17 +315,32 @@ class VSCode(Sandbox):
         self.assertEqual(json.loads(kb.strip_jsonc(txt))[0]["command"], "a//b")
 
     def test_defaults_user_removal_and_extensions(self):
-        doc = {"meta": {"source": kb.VSC_URL, "fetched_at": "2026-01-01T00:00:00Z"}, "rows": kb.parse_vscode_html(VSC_HTML)}
+        doc = {
+            "meta": {"source": kb.VSC_URL, "fetched_at": "2026-01-01T00:00:00Z"},
+            "rows": kb.parse_vscode_html(VSC_HTML),
+        }
         (kb.DATA_DIR / kb.VSC_JSON).write_text(json.dumps(doc))
         kb.VSC_USER.mkdir(parents=True)
         (kb.VSC_USER / "keybindings.json").write_text(
             '// mine\n[{"key": "cmd+x", "command": "-editor.action.clipboardCutAction"},\n'
-            ' {"key": "ctrl+alt+t", "command": "workbench.action.terminal.toggleTerminal", "when": "editorFocus"}]')
+            ' {"key": "ctrl+alt+t", "command": "workbench.action.terminal.toggleTerminal", "when": "editorFocus"}]'
+        )
         ext = self.home / ".vscode/extensions/acme.thing-1.0"
         ext.mkdir(parents=True)
-        (ext / "package.json").write_text(json.dumps({"name": "thing", "displayName": "%dn%", "contributes": {
-            "commands": [{"command": "thing.run", "title": "%run%"}],
-            "keybindings": [{"command": "thing.run", "key": "ctrl+shift+r", "mac": "cmd+shift+r", "when": "editorFocus"}]}}))
+        (ext / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "thing",
+                    "displayName": "%dn%",
+                    "contributes": {
+                        "commands": [{"command": "thing.run", "title": "%run%"}],
+                        "keybindings": [
+                            {"command": "thing.run", "key": "ctrl+shift+r", "mac": "cmd+shift+r", "when": "editorFocus"}
+                        ],
+                    },
+                }
+            )
+        )
         (ext / "package.nls.json").write_text(json.dumps({"dn": "Thing", "run": "Run Thing"}))
         saved = kb.HOME
         kb.HOME = self.home
@@ -304,8 +366,11 @@ class VSCode(Sandbox):
         self.assertTrue(any("cannot parse" in w for w in kb.WARNINGS))
 
     def test_sync_host_allowlist(self):
-        for url in ("https://code.visualstudio.com.evil.example/x", "http://code.visualstudio.com/x",
-                    "https://support.apple.com/en-us/102650"):
+        for url in (
+            "https://code.visualstudio.com.evil.example/x",
+            "http://code.visualstudio.com/x",
+            "https://support.apple.com/en-us/102650",
+        ):
             with self.assertRaises(ValueError):
                 kb._fetch(url, kb.VSC_HOST)
 
@@ -313,9 +378,11 @@ class VSCode(Sandbox):
 class Watchdog(Sandbox):
     def test_stalled_source_is_skipped_not_waited_for(self):
         import time
+
         def hang():
             time.sleep(30)
             return []
+
         hang.__name__ = "load_hang"
         ok = lambda: [kb.Binding("t", "k", "d")]
         ok.__name__ = "load_ok"
@@ -335,9 +402,11 @@ class Watchdog(Sandbox):
 
     def test_results_keep_loader_order(self):
         import time
+
         def slow():
             time.sleep(0.3)
             return [kb.Binding("first", "k", "d")]
+
         slow.__name__ = "load_slow"
         fast = lambda: [kb.Binding("second", "k", "d")]
         fast.__name__ = "load_fast"
@@ -349,14 +418,21 @@ class Watchdog(Sandbox):
             kb.LOADERS = saved
 
     def test_debug_prints_timings(self):
-        r = subprocess.run([sys.executable, "-m", "kb", "--debug", "--no-fzf", "zzz-nothing"], capture_output=True, text=True, timeout=60)
+        r = subprocess.run(
+            [sys.executable, "-m", "kb", "--debug", "--no-fzf", "zzz-nothing"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
         self.assertRegex(r.stderr, r"kb: \w+\s+\d+ ms")
 
 
 class SearchModes(unittest.TestCase):
     def setUp(self):
         B = kb.Binding
-        self.cmd_k = B("vscode", "⌘K", "Open keyboard shortcuts", "cmd+k", "vscode", "workbench.action.openGlobalKeybindings")
+        self.cmd_k = B(
+            "vscode", "⌘K", "Open keyboard shortcuts", "cmd+k", "vscode", "workbench.action.openGlobalKeybindings"
+        )
         self.opt_p = B("skhd", "⌥P", "Open the command palette", "alt+p", "global", "open -a Palette")
         self.chord = B("vscode", "⌘K ⌘C", "Add line comment", "", "vscode", "editor.action.addCommentLine")
         self.tmux = B("tmux", "Ctrl-A › v", "Split pane horizontally", "", "prefix", "split-window -h")
@@ -423,11 +499,13 @@ class CLI(unittest.TestCase):
 class Packaging(Sandbox):
     def test_version_matches_pyproject(self):
         import tomllib
+
         pp = Path(__file__).resolve().parents[1] / "pyproject.toml"
         self.assertEqual(tomllib.loads(pp.read_text())["project"]["version"], kb.VERSION)
 
     def test_no_runtime_dependencies(self):
         import tomllib
+
         pp = Path(__file__).resolve().parents[1] / "pyproject.toml"
         self.assertEqual(tomllib.loads(pp.read_text())["project"]["dependencies"], [])
 

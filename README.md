@@ -7,6 +7,13 @@ Ghostty, Rectangle, Raycast, macOS, VS Code and zsh. Read-only: it never writes 
     kb tmux split      search (all words match)   kb -c           conflicts + shadowed shortcuts
     kb -t skhd         one tool                   kb --doctor     sources found / parse warnings
     kb --json          schema_version 1           kb --sync       refresh Apple + VS Code data
+    kb -m command      every binding using ⌘      kb --by keys left   search the key combo only
+    kb --by name copy  search what it does only   kb -m cmd,shift -t vscode   ⌘⇧ combos in one tool
+
+Searching: free words match everything by default. Use `--by keys` to match only the key combo (so `command` means the
+⌘ key, not the word in a description) or `--by name` to match only what a binding does. `-m/--mod` filters by
+modifier — `command|cmd|⌘`, `option|alt|opt|⌥`, `ctrl|control|⌃`, `shift|⇧`, `fn` — repeat it or comma-separate
+to require several. It also works on chords (`⌘K ⌘C`) and tmux-style keys. `-k` is for one exact combo.
 
 ## Install
 

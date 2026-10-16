@@ -3,6 +3,8 @@
   kb                   interactive fuzzy browser (fzf), falls back to a full list
   kb tmux split        search: every word must match (tool, keys, description, command)
   kb -k opt+t          who owns this key combo? (alt/opt/option, cmd/super, ctrl, shift)
+  kb -m command        every binding that uses the Command (⌘) key (also: -m cmd,shift  /  -m ⌥)
+  kb --by keys left    search only the key combo;  kb --by name command  search only what it does
   kb -t aerospace      only one tool (repeatable: -t tmux -t skhd)
   kb -c                show conflicts (same key bound twice)
   kb --tools           list sources and how many bindings each has
@@ -17,7 +19,7 @@ import argparse, json, os, plistlib, re, shlex, shutil, subprocess, tempfile, to
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 SCHEMA_VERSION = 1
 HOME = Path.home()
 CFG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
@@ -1077,16 +1079,60 @@ def load_all(debug=False):
 
 # ---------------------------------------------------------------- query
 
-def haystack(b):
-    extra = ""
+MOD_WORDS = {"ctrl": "ctrl control ⌃", "alt": "alt opt option ⌥", "shift": "shift ⇧",
+             "cmd": "cmd command super ⌘", "fn": "fn globe"}
+_DISPLAY_MODS = (("⌃", "ctrl"), ("⌥", "alt"), ("⇧", "shift"), ("⌘", "cmd"))
+
+
+def mods_of(b):
+    """Modifier keys a binding uses. Works for single combos, chords (⌘K ⌘C) and tmux-style display text."""
     if b.norm:
-        mods = b.norm.split("+")[:-1]
-        extra = " ".join({"ctrl": "ctrl control ⌃", "alt": "alt opt option ⌥", "shift": "shift ⇧",
-                          "cmd": "cmd command super ⌘"}.get(m, m) for m in mods) + " " + b.norm
-    return f"{b.tool} {b.keys} {b.desc} {b.raw} {b.scope} {b.tags} {extra}".lower()
+        return set(b.norm.split("+")[:-1]) & set(MOD_WORDS)
+    found = {name for sym, name in _DISPLAY_MODS if sym in b.keys}
+    low = b.keys.lower()
+    for word, name in (("ctrl-", "ctrl"), ("alt-", "alt"), ("shift-", "shift"), ("cmd-", "cmd"), ("fn ", "fn")):
+        if word in low:
+            found.add(name)
+    return found
 
 
-def search(items, words, tools, key):
+def keys_text(b):
+    """Everything that describes the key combo itself - never the description."""
+    aliases = " ".join(MOD_WORDS[m] for m in sorted(mods_of(b)))
+    return f"{b.keys} {b.norm} {aliases}".lower()
+
+
+def name_text(b):
+    """What the binding does: description plus the underlying command."""
+    return f"{b.desc} {b.raw}".lower()
+
+
+def haystack(b):
+    return f"{b.tool} {keys_text(b)} {name_text(b)} {b.scope} {b.tags}".lower()
+
+
+SEARCH_TEXT = {"all": haystack, "keys": keys_text, "name": name_text}
+
+
+def parse_mods(spec):
+    """'command', 'opt,shift', '⌘⇧' -> canonical modifier names; raises ValueError for unknown words."""
+    names, spec = [], spec.strip()
+    for sym, name in _DISPLAY_MODS:
+        if sym in spec:
+            names.append(name)
+            spec = spec.replace(sym, " ")
+    for tok in re.split(r"[,+\s-]+", spec):
+        if not tok:
+            continue
+        m = MOD_ALIAS.get(tok.lower())
+        if m not in MOD_WORDS:
+            raise ValueError(f"unknown modifier {tok!r} (use ctrl, alt/option, shift, cmd/command, fn)")
+        names.append(m)
+    return names
+
+
+def search(items, words, tools=None, key=None, mods=None, by="all"):
+    """Filter bindings. `by` chooses what free-text words match: keys, name, or all fields."""
     res = items
     if tools:
         want = {t.lower() for t in tools}
@@ -1095,15 +1141,20 @@ def search(items, words, tools, key):
         n = parse_combo(key)
         *km, kk = n.split("+")
         disp = f"ctrl-{kk}" if km == ["ctrl"] else kk if not km else None
+
         def hit(b):
             if b.norm:
                 return b.norm == n
             kl = b.keys.lower()
             return disp is not None and (kl == disp or kl.endswith(" " + disp))
+
         res = [b for b in res if hit(b)]
+    if mods:
+        res = [b for b in res if set(mods) <= mods_of(b)]
+    text = SEARCH_TEXT[by]
     for w in words:
         w = w.lower()
-        res = [b for b in res if w in haystack(b)]
+        res = [b for b in res if w in text(b)]
     return res
 
 
@@ -1258,6 +1309,13 @@ def show_detail(idx, snapshot):
         print(detail(items[idx], items))
 
 
+def _mod_arg(value):
+    try:
+        return parse_mods(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="kb", description="Browse and search all keybindings.",
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1265,6 +1323,11 @@ def main(argv=None):
     ap.add_argument("query", nargs="*", help="words that must all match")
     ap.add_argument("-t", "--tool", action="append", help="only this tool (repeatable)")
     ap.add_argument("-k", "--key", help="look up a key combo, e.g. opt+t, 'alt-shift-h', ⌘⇧p")
+    ap.add_argument("-m", "--mod", action="append", type=_mod_arg, metavar="MOD",
+                    help="only combos that use this modifier: ctrl, alt/option, shift, cmd/command, fn "
+                         "(repeatable or comma-separated; all must be present)")
+    ap.add_argument("--by", choices=["all", "keys", "name"], default="all",
+                    help="what the search words match: the key combo itself, what it does (name), or everything")
     ap.add_argument("-c", "--conflicts", action="store_true", help="show conflicts and shadowed shortcuts (exit 1 on conflict)")
     ap.add_argument("--tools", action="store_true", help="list sources")
     ap.add_argument("--doctor", action="store_true", help="check sources and parse warnings")
@@ -1313,13 +1376,13 @@ def main(argv=None):
         return 0
     if a.conflicts:
         return 1 if report_conflicts(items) else 0
-    res = search(items, a.query, a.tool, a.key)
+    res = search(items, a.query, a.tool, a.key, [m for grp in (a.mod or []) for m in grp], a.by)
     if a.json:
         print(json.dumps({"schema_version": SCHEMA_VERSION, "bindings": [asdict(b) for b in res]},
                          indent=2, ensure_ascii=False))
         return 0 if res else 1
     tty = sys.stdout.isatty() and sys.stdin.isatty() and not a.no_fzf
-    filtered = bool(a.query or a.key or a.tool)
+    filtered = bool(a.query or a.key or a.tool or a.mod)
     if tty and res and (not filtered or len(res) > 25):
         interactive(res)
     else:

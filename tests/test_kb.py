@@ -353,6 +353,55 @@ class Watchdog(Sandbox):
         self.assertRegex(r.stderr, r"kb: \w+\s+\d+ ms")
 
 
+class SearchModes(unittest.TestCase):
+    def setUp(self):
+        B = kb.Binding
+        self.cmd_k = B("vscode", "⌘K", "Open keyboard shortcuts", "cmd+k", "vscode", "workbench.action.openGlobalKeybindings")
+        self.opt_p = B("skhd", "⌥P", "Open the command palette", "alt+p", "global", "open -a Palette")
+        self.chord = B("vscode", "⌘K ⌘C", "Add line comment", "", "vscode", "editor.action.addCommentLine")
+        self.tmux = B("tmux", "Ctrl-A › v", "Split pane horizontally", "", "prefix", "split-window -h")
+        self.shift = B("macos", "⇧⌘G", "Go to Folder", "shift+cmd+g", "system", "")
+        self.items = [self.cmd_k, self.opt_p, self.chord, self.tmux, self.shift]
+
+    def test_mods_of_handles_combos_chords_and_tmux_text(self):
+        self.assertEqual(kb.mods_of(self.cmd_k), {"cmd"})
+        self.assertEqual(kb.mods_of(self.shift), {"shift", "cmd"})
+        self.assertEqual(kb.mods_of(self.chord), {"cmd"})  # no norm, derived from the display text
+        self.assertEqual(kb.mods_of(self.tmux), {"ctrl"})
+        self.assertEqual(kb.mods_of(kb.Binding("x", "Plain", "d")), set())
+
+    def test_parse_mods_aliases_and_errors(self):
+        self.assertEqual(kb.parse_mods("command"), ["cmd"])
+        self.assertEqual(kb.parse_mods("opt,shift"), ["alt", "shift"])
+        self.assertEqual(sorted(kb.parse_mods("⌘⇧")), ["cmd", "shift"])
+        with self.assertRaises(ValueError):
+            kb.parse_mods("hyper")
+
+    def test_mod_filter_requires_all_modifiers(self):
+        got = kb.search(self.items, [], mods=["cmd"])
+        self.assertEqual({b.keys for b in got}, {"⌘K", "⌘K ⌘C", "⇧⌘G"})
+        got = kb.search(self.items, [], mods=["cmd", "shift"])
+        self.assertEqual([b.keys for b in got], ["⇧⌘G"])
+
+    def test_by_keys_ignores_descriptions_and_by_name_ignores_keys(self):
+        # 'command' appears in one description but is a modifier word for the ⌘ bindings
+        by_keys = kb.search(self.items, ["command"], by="keys")
+        self.assertNotIn(self.opt_p, by_keys)
+        self.assertIn(self.cmd_k, by_keys)
+        by_name = kb.search(self.items, ["command"], by="name")
+        self.assertEqual(by_name, [self.opt_p])
+        self.assertEqual(len(kb.search(self.items, ["command"], by="all")), 4)
+
+    def test_by_keys_matches_key_names(self):
+        self.assertEqual(kb.search(self.items, ["shift"], by="keys"), [self.shift])
+        self.assertEqual(kb.search(self.items, ["alt"], by="keys"), [self.opt_p])
+
+    def test_cli_rejects_unknown_modifier(self):
+        r = subprocess.run([sys.executable, "-m", "kb", "-m", "hyper"], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("unknown modifier", r.stderr)
+
+
 class CLI(unittest.TestCase):
     def run_kb(self, *args, env=None):
         e = dict(os.environ, NO_COLOR="1", **(env or {}))

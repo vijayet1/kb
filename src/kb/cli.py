@@ -15,6 +15,7 @@ import argparse
 import contextlib
 import ctypes
 import hashlib
+import importlib.metadata
 import json
 import os
 import plistlib
@@ -38,7 +39,23 @@ try:
 except ModuleNotFoundError:  # Python < 3.11; pip/uv enforce requires-python, this covers running the file directly
     sys.exit(f"kb: needs Python 3.11+ (found {sys.version.split()[0]}); try: brew install python")
 
-VERSION = "1.6.0"
+
+def _version() -> str:
+    """Single source of truth is pyproject.toml: read it in a checkout, else the installed package metadata."""
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        project = tomllib.loads(pyproject.read_text()).get("project", {})
+        if project.get("name") == "kb" and project.get("version"):
+            return str(project["version"])
+    except (OSError, ValueError):
+        pass
+    try:
+        return importlib.metadata.version("kb")
+    except importlib.metadata.PackageNotFoundError:
+        return "0+unknown"
+
+
+VERSION = _version()
 SCHEMA_VERSION = 1
 HOME = Path.home()
 CFG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")

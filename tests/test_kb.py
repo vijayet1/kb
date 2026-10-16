@@ -615,6 +615,51 @@ class ToolScopedLoading(Sandbox):
         self.assertIn("vscode", r.stderr)
 
 
+class VersionSource(Sandbox):
+    def setUp(self):
+        super().setUp()
+        self.saved_file = kb.__file__
+        (self.home / "src/kb").mkdir(parents=True)
+        kb.__file__ = str(self.home / "src/kb/cli.py")
+
+    def tearDown(self):
+        kb.__file__ = self.saved_file
+        super().tearDown()
+
+    def test_checkout_reads_pyproject(self):
+        (self.home / "pyproject.toml").write_text('[project]\nname = "kb"\nversion = "9.8.7"\n')
+        self.assertEqual(kb._version(), "9.8.7")
+
+    def test_foreign_pyproject_is_ignored_in_favour_of_installed_metadata(self):
+        import importlib.metadata as md
+
+        (self.home / "pyproject.toml").write_text('[project]\nname = "something-else"\nversion = "0.0.1"\n')
+        saved = md.version
+        md.version = lambda name: "4.5.6"
+        try:
+            self.assertEqual(kb._version(), "4.5.6")
+        finally:
+            md.version = saved
+
+    def test_unknown_when_neither_available(self):
+        import importlib.metadata as md
+
+        saved = md.version
+
+        def missing(name):
+            raise md.PackageNotFoundError(name)
+
+        md.version = missing
+        try:
+            self.assertEqual(kb._version(), "0+unknown")
+        finally:
+            md.version = saved
+
+    def test_running_version_matches_pyproject(self):
+        kb.__file__ = self.saved_file
+        self.assertEqual(kb._version(), kb.VERSION)
+
+
 class CLI(unittest.TestCase):
     def run_kb(self, *args, env=None):
         e = dict(os.environ, NO_COLOR="1", **(env or {}))

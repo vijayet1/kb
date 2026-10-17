@@ -903,20 +903,35 @@ class FzfPreview(unittest.TestCase):
 class NetIsolation(unittest.TestCase):
     SRC = Path(kb.__file__).parent
 
-    def imports_of(self, path):
-        tree = ast.parse(path.read_text())
+    BANNED = ("urllib.request", "http.client", "socket", "ssl")
+
+    @staticmethod
+    def imports_in(source, package="kb"):
+        """Every module name a source text can import, with relative imports resolved against `package`."""
         names = set()
-        for n in ast.walk(tree):
+        for n in ast.walk(ast.parse(source)):
             if isinstance(n, ast.Import):
                 names |= {a.name for a in n.names}
             elif isinstance(n, ast.ImportFrom):
-                names.add(n.module or "")
+                base = n.module or ""
+                if n.level:
+                    parts = package.split(".")[: len(package.split(".")) - (n.level - 1)]
+                    base = ".".join(parts + ([n.module] if n.module else []))
+                names.add(base)
+                names |= {f"{base}.{a.name}" for a in n.names}
         return names
+
+    def imports_of(self, path):
+        return self.imports_in(path.read_text())
+
+    @classmethod
+    def banned_in(cls, imported):
+        return {m for m in imported if any(m == b or m.startswith(b + ".") for b in cls.BANNED)}
 
     def test_only_net_module_imports_the_network_stack(self):
         offenders = {}
         for f in self.SRC.glob("*.py"):
-            bad = {m for m in self.imports_of(f) if m in ("urllib.request", "http.client", "socket", "ssl")}
+            bad = self.banned_in(self.imports_of(f))
             if bad and f.name != "net.py":
                 offenders[f.name] = bad
         self.assertEqual(offenders, {})
@@ -924,6 +939,28 @@ class NetIsolation(unittest.TestCase):
     def test_net_module_is_stateless_and_does_not_import_cli(self):
         imported = self.imports_of(self.SRC / "net.py")
         self.assertFalse({"kb.cli", "cli"} & imported, imported)  # absolute or relative import of the CLI module
+
+    def test_guard_detects_from_import_forms_of_the_network_stack(self):
+        for src in (
+            "from urllib import request",
+            "from http import client",
+            "from urllib.request import urlopen",
+            "import socket",
+            "from ssl import create_default_context",
+        ):
+            self.assertTrue(self.banned_in(self.imports_in(src)), src)
+        self.assertFalse(self.banned_in(self.imports_in("import urllib.parse\nfrom . import net")))
+
+    def test_guard_detects_cli_imports_in_all_forms(self):
+        for src in (
+            "from . import cli",
+            "from .cli import x",
+            "from kb import cli",
+            "import kb.cli",
+            "from kb.cli import x",
+        ):
+            self.assertIn("kb.cli", self.imports_in(src), src)
+        self.assertIn("kb.net", self.imports_in("from .net import x"))
 
     def test_cli_wrappers_still_delegate(self):
         self.assertTrue(callable(kb._fetch) and callable(kb._save_doc))

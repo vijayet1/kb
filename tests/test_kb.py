@@ -19,11 +19,23 @@ from unittest import mock
 import kb.cli as kb
 from kb import net
 
-# Tests must never touch the network: first-run downloads are opt-in per test (see AutoDownload).
+
+def run_kb_isolated(args, env=None, **kw):
+    """Run `python -m kb` offline with a throwaway HOME/XDG dirs: never reads or writes real state."""
+    with tempfile.TemporaryDirectory() as d:
+        e = dict(os.environ, HOME=d, XDG_CONFIG_HOME=d, XDG_DATA_HOME=d, KB_NO_AUTO_SYNC="1", NO_COLOR="1")
+        e.update(env or {})
+        return subprocess.run(
+            [sys.executable, "-m", "kb", *args], capture_output=True, text=True, env=e, check=False, **kw
+        )
 
 
 class Sandbox(unittest.TestCase):
-    """Point kb at a throwaway HOME so tests never read real configs."""
+    """Point kb at a throwaway HOME so tests never read real configs.
+
+    Tests must never touch the network: auto-sync is off and real requests raise
+    (first-run downloads are opt-in per test, see AutoDownload).
+    """
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -39,17 +51,15 @@ class Sandbox(unittest.TestCase):
         def _no_net(*a, **k):
             raise AssertionError("test attempted a real network request")
 
-        self._net = [
+        for p in (
             mock.patch.object(urllib.request.OpenerDirector, "open", _no_net),
             mock.patch("urllib.request.urlopen", _no_net),
-        ]
-        self._net.append(mock.patch.dict(os.environ, {"KB_NO_AUTO_SYNC": "1"}))
-        for p in self._net:
+            mock.patch.dict(os.environ, {"KB_NO_AUTO_SYNC": "1"}),
+        ):
             p.start()
+            self.addCleanup(p.stop)
 
     def tearDown(self):
-        for p in self._net:
-            p.stop()
         kb.HOME, kb.CFG, kb.DARWIN = self.saved[:3]
         kb.WARNINGS[:] = self.saved[3]
         kb.DATA_DIR, kb.VSC_APP, kb.VSC_USER = self.saved[4:7]
@@ -453,13 +463,7 @@ class Watchdog(Sandbox):
             kb.LOADERS = saved
 
     def test_debug_prints_timings(self):
-        r = subprocess.run(
-            [sys.executable, "-m", "kb", "--debug", "--no-fzf", "zzz-nothing"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
+        r = run_kb_isolated(["--debug", "--no-fzf", "zzz-nothing"], timeout=60)
         self.assertRegex(r.stderr, r"kb: \w+\s+\d+ ms")
 
 
@@ -509,9 +513,7 @@ class SearchModes(unittest.TestCase):
         self.assertEqual(kb.search(self.items, ["alt"], by="keys"), [self.opt_p])
 
     def test_cli_rejects_unknown_modifier(self):
-        r = subprocess.run(
-            [sys.executable, "-m", "kb", "-m", "hyper"], capture_output=True, text=True, timeout=30, check=False
-        )
+        r = run_kb_isolated(["-m", "hyper"], timeout=30)
         self.assertEqual(r.returncode, 2)
         self.assertIn("unknown modifier", r.stderr)
 
@@ -629,9 +631,7 @@ class ToolScopedLoading(Sandbox):
         self.assertEqual(kb.known_tools(), ["macos", "tmux", "vscode"])
 
     def test_cli_rejects_unknown_tool_with_choices(self):
-        r = subprocess.run(
-            [sys.executable, "-m", "kb", "-t", "emacs"], capture_output=True, text=True, timeout=30, check=False
-        )
+        r = run_kb_isolated(["-t", "emacs"], timeout=30)
         self.assertEqual(r.returncode, 2)
         self.assertIn("unknown tool 'emacs'", r.stderr)
         self.assertIn("vscode", r.stderr)
@@ -684,10 +684,7 @@ class VersionSource(Sandbox):
 
 class CLI(unittest.TestCase):
     def run_kb(self, *args, env=None):
-        e = dict(os.environ, NO_COLOR="1", **(env or {}))
-        return subprocess.run(
-            [sys.executable, "-m", "kb", *args], capture_output=True, text=True, env=e, timeout=30, check=False
-        )
+        return run_kb_isolated(args, env=env, timeout=30)
 
     def test_exit_codes(self):
         self.assertEqual(self.run_kb("--version").returncode, 0)
@@ -696,7 +693,7 @@ class CLI(unittest.TestCase):
 
     def test_json_schema(self):
         with tempfile.TemporaryDirectory() as d:
-            r = self.run_kb("--json", env={"HOME": d, "XDG_CONFIG_HOME": d})
+            r = self.run_kb("--json", env={"HOME": d, "XDG_CONFIG_HOME": d, "XDG_DATA_HOME": d})
             data = json.loads(r.stdout)
             self.assertEqual(data["schema_version"], kb.SCHEMA_VERSION)
             self.assertIsInstance(data["bindings"], list)

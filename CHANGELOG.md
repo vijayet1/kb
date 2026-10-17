@@ -7,6 +7,8 @@ changes only when that output breaks.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-17
+
 ### Changed
 - **Scripting contract:** `-k ''` (empty keyword) and `--json` combined with `-c`/`--tools`/`--doctor` (which have no
   JSON form) now exit 2 as usage errors instead of silently running.

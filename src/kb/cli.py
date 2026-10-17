@@ -15,8 +15,6 @@ import argparse
 import contextlib
 import ctypes
 import difflib
-import hashlib
-import http.client
 import importlib.metadata
 import json
 import os
@@ -30,12 +28,13 @@ import tempfile
 import threading
 import time
 import unicodedata
-import urllib.parse
-import urllib.request
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
+
+from . import net
+from .net import NETWORK_ERRORS
 
 try:
     import tomllib
@@ -800,41 +799,13 @@ def parse_apple_html(html_text):
 
 
 def _fetch(url: str, host: str, timeout: float = 20) -> bytes:
-    """GET url over https from exactly `host`; bounded size/time; refuses redirects to other hosts."""
-    u = urllib.parse.urlparse(url)
-    if u.scheme != "https" or u.hostname != host:
-        raise ValueError(f"refusing to fetch {url!r}: only https://{host}/ is allowed")
-    req = urllib.request.Request(  # noqa: S310 - https + exact host validated above
-        url, headers={"User-Agent": f"kb/{VERSION} (+local keybinding index)"}
+    return net.fetch(
+        url, host, timeout=timeout, max_bytes=APPLE_MAX_BYTES, user_agent=f"kb/{VERSION} (+local keybinding index)"
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - same validated request
-        if urllib.parse.urlparse(r.geturl()).hostname != host:
-            raise ValueError(f"redirected away from {host}; aborting")
-        raw = r.read(APPLE_MAX_BYTES + 1)
-    if len(raw) > APPLE_MAX_BYTES:
-        raise ValueError("response too large")
-    return raw
 
 
 def _save_doc(name, url, raw, rows, min_rows, extra=None):
-    if len(rows) < min_rows:
-        raise ValueError(f"only {len(rows)} rows parsed - page layout probably changed; keeping old data")
-    doc = {
-        "meta": {
-            "source": url,
-            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "sha256": hashlib.sha256(raw).hexdigest(),
-            "kb_version": VERSION,
-            "rows": len(rows),
-            **(extra or {}),
-        },
-        "rows": rows,
-    }
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = DATA_DIR / f"{name}.{os.getpid()}.tmp"  # unique per process: two kb runs may sync at once
-    tmp.write_text(json.dumps(doc, indent=1, ensure_ascii=False) + "\n")
-    tmp.replace(DATA_DIR / name)
-    return doc
+    return net.save_doc(DATA_DIR, name, url, raw, rows, min_rows, version=VERSION, extra=extra)
 
 
 def sync_apple(url: str = APPLE_URL, timeout: float = 20) -> dict:
@@ -863,7 +834,7 @@ def ensure_data(name: str) -> Path | None:
     )
     try:
         sync(timeout=AUTO_SYNC_TIMEOUT)
-    except (OSError, ValueError, http.client.HTTPException) as e:
+    except NETWORK_ERRORS as e:
         WARNINGS.append(f"could not download {name}: {e}")
         return None
     return path if path.exists() else None

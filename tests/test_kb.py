@@ -1,5 +1,6 @@
 """Run: uv run python -m unittest discover -s tests -v   (or: make test)"""
 
+import ast
 import contextlib
 import io
 import json
@@ -897,6 +898,38 @@ class FzfPreview(unittest.TestCase):
         self.assertEqual(parts[1], str(Path("/tmp/my dir/kb").resolve()))
         self.assertEqual(parts[-1], "/tmp/snap dir/s.json")
         self.assertIn("{1}", cmd)
+
+
+class NetIsolation(unittest.TestCase):
+    SRC = Path(kb.__file__).parent
+
+    def imports_of(self, path):
+        tree = ast.parse(path.read_text())
+        names = set()
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                names |= {a.name for a in n.names}
+            elif isinstance(n, ast.ImportFrom):
+                names.add(n.module or "")
+        return names
+
+    def test_only_net_module_imports_the_network_stack(self):
+        offenders = {}
+        for f in self.SRC.glob("*.py"):
+            bad = {m for m in self.imports_of(f) if m in ("urllib.request", "http.client", "socket", "ssl")}
+            if bad and f.name != "net.py":
+                offenders[f.name] = bad
+        self.assertEqual(offenders, {})
+
+    def test_net_module_is_stateless_and_does_not_import_cli(self):
+        imported = self.imports_of(self.SRC / "net.py")
+        self.assertFalse({"kb.cli", "cli"} & imported, imported)  # absolute or relative import of the CLI module
+
+    def test_cli_wrappers_still_delegate(self):
+        self.assertTrue(callable(kb._fetch) and callable(kb._save_doc))
+        from kb import net
+
+        self.assertTrue(callable(net.fetch) and callable(net.save_doc))
 
 
 if __name__ == "__main__":

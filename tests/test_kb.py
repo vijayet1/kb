@@ -848,5 +848,30 @@ class ScriptingContract(Sandbox):
         self.assertEqual(r.stderr, "")
 
 
+class Colour(unittest.TestCase):
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    def env(self, **kw):
+        return mock.patch.dict(os.environ, kw, clear=True)
+
+    def test_precedence(self):
+        tty, pipe = self.Tty(), io.StringIO()
+        with self.env():
+            self.assertTrue(kb.want_color(tty))
+            self.assertFalse(kb.want_color(pipe))
+        with self.env(NO_COLOR="1"):
+            self.assertFalse(kb.want_color(tty))
+        with self.env(NO_COLOR=""):
+            self.assertTrue(kb.want_color(tty))  # empty NO_COLOR is unset (no-color.org)
+        with self.env(FORCE_COLOR="1"):
+            self.assertTrue(kb.want_color(pipe))
+        with self.env(FORCE_COLOR="0"):
+            self.assertFalse(kb.want_color(pipe))
+        with self.env(NO_COLOR="1", FORCE_COLOR="1"):
+            self.assertFalse(kb.want_color(pipe))  # NO_COLOR wins
+
+
 if __name__ == "__main__":
     unittest.main()

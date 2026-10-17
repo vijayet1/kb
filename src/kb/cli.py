@@ -67,11 +67,20 @@ DEFAULTS_BIN = "/usr/bin/defaults"  # absolute: never resolve system tools throu
 LOADER_BUDGET = float(os.environ.get("KB_LOADER_TIMEOUT", "10"))  # seconds any one source may take
 
 
+def want_color(stream) -> bool:
+    env = os.environ
+    if env.get("NO_COLOR"):
+        return False
+    if any(env.get(v, "") not in ("", "0") for v in ("FORCE_COLOR", "CLICOLOR_FORCE")):
+        return True
+    return stream.isatty()
+
+
 @dataclass
 class Settings:
     """Process-wide switches set once from the command line (attribute assignment, not `global`)."""
 
-    color: bool = field(default_factory=lambda: sys.stdout.isatty() and "NO_COLOR" not in os.environ)
+    color: bool = field(default_factory=lambda: want_color(sys.stdout))
     include_unnamed: bool = False  # --all-system
 
 
@@ -1893,7 +1902,7 @@ def interactive(items: list[Binding]) -> None:
             "ctrl-/:toggle-preview",
         ]
         subprocess.run(cmd, input="\n".join(lines), text=True, check=False)  # noqa: S603 - fzf argv built here, no shell
-    SETTINGS.color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    SETTINGS.color = want_color(sys.stdout)
 
 
 def show_detail(idx, snapshot):

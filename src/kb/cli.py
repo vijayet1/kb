@@ -28,6 +28,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable
@@ -137,7 +138,6 @@ KEY_SYM = {
 }
 
 
-_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _SECRET = re.compile(
     r"(?i)((?:token|secret|passw(?:or)?d|passwd|api[_-]?key|apikey|auth|bearer|credential)s?[\w-]*\s*[=:]\s*|"
     r"authorization:\s*(?:bearer|basic)\s+|--?(?:token|password|passwd|secret|api-key)[= ])"
@@ -148,8 +148,21 @@ _TOKENISH = re.compile(
 )
 
 
+_DROP_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+
+
 def sanitize(text: object) -> str:
-    return _CTRL.sub("", str(text))
+    """Make config/web text safe to print: no escape sequences, bidi/zero-width tricks, or layout characters."""
+    return "".join(
+        " " if ch in "\t\n\r" else ch
+        for ch in str(text)
+        if ch in "\t\n\r" or unicodedata.category(ch) not in _DROP_CATEGORIES
+    )
+
+
+def read_lines(p: Path) -> list[str]:
+    """Lines split on \\n only: str.splitlines() also splits on U+2028/U+0085 and would let a file hide a binding."""
+    return p.read_text().replace("\r\n", "\n").split("\n")
 
 
 def redact(text: str) -> str:
@@ -259,7 +272,7 @@ def load_aerospace() -> list[Binding]:
     if not p.exists():
         return out
     data = tomllib.loads(p.read_text())
-    lines = p.read_text().splitlines()
+    lines = read_lines(p)
     for mode, body in data.get("mode", {}).items():
         for key, cmds in body.get("binding", {}).items():
             cl = cmds if isinstance(cmds, list) else [cmds]
@@ -292,7 +305,7 @@ def load_skhd() -> list[Binding]:
     out: list[Binding] = []
     if not p.exists():
         return out
-    for i, line in enumerate(p.read_text().splitlines(), 1):
+    for i, line in enumerate(read_lines(p), 1):
         s = line.strip()
         if not s or s.startswith("#") or ":" not in s:
             continue
@@ -387,7 +400,7 @@ def load_tmux() -> list[Binding]:
         if not p.exists() or p.resolve() in seen:
             continue
         seen.add(p.resolve())
-        for i, line in enumerate(p.read_text().splitlines(), 1):
+        for i, line in enumerate(read_lines(p), 1):
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
@@ -482,7 +495,7 @@ def load_ghostty() -> list[Binding]:
     for p in [CFG / "ghostty" / "config", CFG / "ghostty" / "picker.config"]:
         if not p.exists():
             continue
-        for i, line in enumerate(p.read_text().splitlines(), 1):
+        for i, line in enumerate(read_lines(p), 1):
             m = re.match(r"\s*keybind\s*=\s*(.+?)=(.+)", line)
             if m:
                 n = parse_combo(m[1].replace("+", "-").replace("super", "cmd"))
@@ -1520,7 +1533,7 @@ def load_zsh() -> list[Binding]:
     for p in [HOME / ".dotfiles/zsh/.zshrc", HOME / ".zshrc"]:
         if not p.exists():
             continue
-        for i, line in enumerate(p.read_text().splitlines(), 1):
+        for i, line in enumerate(read_lines(p), 1):
             m = re.match(r"\s*bindkey\s+(?:-\w\s+)?'([^']+)'\s+(\S+)", line)
             if m:
                 k = m[1].replace("^x", "Ctrl-X ").replace("^X", "Ctrl-X ").replace("^e", "e")
@@ -1610,7 +1623,7 @@ def load_all(debug: bool = False, tools: Iterable[str] | None = None) -> list[Bi
         for name, sec in sorted(timings.items(), key=lambda kv: -kv[1]):
             print(f"kb: {name[5:]:<10} {sec * 1000:7.0f} ms", file=sys.stderr)
     for w in WARNINGS:
-        print(f"kb: warning: {w}", file=sys.stderr)
+        print(f"kb: warning: {sanitize(w)}", file=sys.stderr)
     return out
 
 
@@ -1824,7 +1837,7 @@ def doctor(items: list[Binding]) -> int:
         state = "n/a" if p is None else ("found  " if p.exists() else "missing")
         print(f"  {t:<10} {state}  {counts.get(t, 0):>3} bindings  {C('2', str(p) if p else '')}")
     for w in WARNINGS:
-        print(f"  {C('31', 'warning')}  {w}")
+        print(f"  {C('31', 'warning')}  {sanitize(w)}")
     slow = {k[5:]: v for k, v in LAST_TIMINGS.items() if v > 1.0}
     for name, sec in sorted(slow.items(), key=lambda kv: -kv[1]):
         print(f"  {C('33', 'slow')}     {name} took {sec:.1f}s")
@@ -1838,7 +1851,7 @@ def doctor(items: list[Binding]) -> int:
         inst = vscode_installed_version()
         print(f"  {C('2', 'vscode')}   {_meta_line(m, 'default rows')}  (installed VS Code {inst or 'not found'})")
     for w in WARNINGS_INFO:
-        print(f"  {C('2', 'note')}     {w}")
+        print(f"  {C('2', 'note')}     {sanitize(w)}")
     print("\nread-only: kb never writes to your configs.")
     return 1 if WARNINGS else 0
 

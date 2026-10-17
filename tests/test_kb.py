@@ -685,6 +685,38 @@ class CLI(unittest.TestCase):
             self.assertIsInstance(data["bindings"], list)
 
 
+class TerminalSafety(Sandbox):
+    def test_sanitize_neutralises_layout_and_spoofing_characters(self):
+        self.assertEqual(kb.sanitize("a\tb\nc"), "a b c")
+        self.assertEqual(kb.sanitize("x\u202eevil\u202c"), "xevil")  # bidi override
+        self.assertEqual(kb.sanitize("a\u200bb\u2028c\u2029d"), "abcd")  # zero-width, line/para separators
+        self.assertEqual(kb.sanitize("\x1b[31mred\x1b[0m"), "[31mred[0m")  # ESC dropped as before
+
+    def test_binding_text_has_no_tabs_or_newlines(self):
+        b = kb.Binding("x", "k\tk", "line1\nline2")
+        self.assertNotIn("\t", b.keys)
+        self.assertNotIn("\n", b.desc)
+
+    def test_read_lines_splits_on_newline_only(self):
+        p = self.home / "f.conf"
+        p.write_text("a\u2028b\r\nc\n")
+        self.assertEqual(kb.read_lines(p), ["a\u2028b", "c", ""])
+
+    def test_unicode_line_separator_in_a_comment_cannot_create_a_binding(self):
+        # splitlines() treats U+2028 as a line break, so the text after it in a *comment* became a live binding.
+        self.write("tmux/tmux.conf", "# harmless comment\u2028bind z kill-server\nbind b split-window\n")
+        keys = {b.keys for b in kb.load_tmux()}
+        self.assertNotIn("Ctrl-B › z", keys)
+        self.assertIn("Ctrl-B › b", keys)
+
+    def test_warnings_are_sanitised_on_stderr(self):
+        kb.WARNINGS.append("bad \x1b]0;pwn\x07 thing")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            kb.load_all(tools=["tmux"])
+        self.assertNotIn("\x1b", err.getvalue())
+
+
 class Packaging(Sandbox):
     def test_version_matches_pyproject(self):
         import tomllib

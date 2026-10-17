@@ -7,25 +7,13 @@ changes only when that output breaks.
 
 ## [Unreleased]
 
-> The items under "Unreleased (slated for 1.8.0)" below are download hardening; the rest are pending for 1.7.0.
-> Split the section at release time.
-
-### Unreleased (slated for 1.8.0)
-- Network and data-file code moved to the stateless `kb.net` module, the only module that imports the network stack
-  (enforced by a test).
-- **Security:** redirects are validated before they are followed (https and same host only).
-- **Security:** downloads have a total deadline and a size cap, both enforced while reading.
-- **Security:** relative `XDG_DATA_HOME`/`XDG_CONFIG_HOME` are ignored.
-- **Security:** the data dir is created 0700 and data files 0600, written without following symlinks.
-- Corrupt or malformed downloaded data now gives a warning pointing at `kb --sync` instead of failing the whole source.
-- `kb --doctor` no longer crashes on a corrupt data file and exits 1 for it.
-- Downloaded files record `schema` and `rows_sha256`.
-- Tests can no longer reach the network.
-
 ### Changed
 - **Scripting contract:** `-k ''` (empty keyword) and `--json` combined with `-c`/`--tools`/`--doctor` (which have no
   JSON form) now exit 2 as usage errors instead of silently running.
 - **Scripting contract:** the "N bindings" footer is now written to stderr, so stdout holds only results.
+- Corrupt or malformed downloaded data now gives a warning pointing at `kb --sync` instead of failing the whole source.
+- `kb --doctor` exits 1 when a data file is unreadable or corrupt (it no longer crashes).
+- Network and data-file code moved to the stateless `kb.net` module, the only module that imports the network stack.
 - `-t` with an unknown tool name suggests the closest valid one ("did you mean …").
 - `FORCE_COLOR` and `CLICOLOR_FORCE` force colour on; an empty `NO_COLOR` is treated as unset.
 - Shadowed bindings are explained, and a summary line counts conflicts and shadows.
@@ -34,6 +22,12 @@ changes only when that output breaks.
   `KB_NO_AUTO_SYNC=1` disables that. Offline runs still work and warn about what is missing.
 - The version now lives only in `pyproject.toml`; the code reads it from there (checkout) or from the installed
   package metadata.
+
+### Security
+- Redirects are validated before they are followed (https and same host only).
+- Downloads have a total deadline and a size cap, both enforced while reading.
+- Relative `XDG_DATA_HOME`/`XDG_CONFIG_HOME` are ignored; only absolute paths are honoured.
+- The data dir is created 0700 and data files 0600, written without following symlinks.
 
 ### Fixed
 - Terminal safety: output sanitising now also strips bidi controls, zero-width characters, tabs and newlines, and
@@ -44,12 +38,16 @@ changes only when that output breaks.
 - The fzf preview command shell-quotes the Python interpreter path.
 
 ### Added
+- Downloaded files record `schema` and `rows_sha256`.
 - CI runs `just check` on macOS and Linux; `SECURITY.md` and Dependabot config added.
 - MIT `LICENSE`, project URLs and license metadata for the public repository.
 - `just release <patch|minor|major>` (`make release LEVEL=…`): checks the tree is clean and on `main`, runs lint and
   tests, bumps the version with `uv version`, promotes this changelog section, commits and creates an annotated
   `vX.Y.Z` tag. Nothing is pushed.
 - This changelog, and tags `v1.3.0` … `v1.6.0` for the existing history.
+
+### Internal
+- Tests can no longer reach the network.
 
 ## [1.6.0] - 2026-10-16
 

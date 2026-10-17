@@ -37,7 +37,8 @@ Pick whichever tool you already use — all of them install the same `kb` comman
 
 **First run needs the network once.** Apple's and VS Code's default shortcut lists are not shipped with `kb`; the first
 run that needs them downloads them from the official pages (`support.apple.com`, `code.visualstudio.com` — nothing else)
-into `~/.local/share/kb/` and says so on stderr. Later runs are offline. `kb --sync` refreshes them; set
+into `~/.local/share/kb/` (a 0700 directory; the files are mode 0600) and says so on stderr. Redirects are followed only
+over https on the same official host. `XDG_DATA_HOME`/`XDG_CONFIG_HOME` must be absolute paths; relative values are ignored. Later runs are offline. `kb --sync` refreshes them; set
 `KB_NO_AUTO_SYNC=1` to forbid automatic downloads (then run `kb --sync` yourself). Offline or blocked, `kb` still works for
 everything else and warns about what is missing. See *Data and licensing* below.
 

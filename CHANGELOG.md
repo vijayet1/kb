@@ -7,6 +7,21 @@ changes only when that output breaks.
 
 ## [Unreleased]
 
+> The items under "Unreleased (slated for 1.8.0)" below are download hardening; the rest are pending for 1.7.0.
+> Split the section at release time.
+
+### Unreleased (slated for 1.8.0)
+- Network and data-file code moved to the stateless `kb.net` module, the only module that imports the network stack
+  (enforced by a test).
+- **Security:** redirects are validated before they are followed (https and same host only).
+- **Security:** downloads have a total deadline and a size cap, both enforced while reading.
+- **Security:** relative `XDG_DATA_HOME`/`XDG_CONFIG_HOME` are ignored.
+- **Security:** the data dir is created 0700 and data files 0600, written without following symlinks.
+- Corrupt or malformed downloaded data now gives a warning pointing at `kb --sync` instead of failing the whole source.
+- `kb --doctor` no longer crashes on a corrupt data file and exits 1 for it.
+- Downloaded files record `schema` and `rows_sha256`.
+- Tests can no longer reach the network.
+
 ### Changed
 - **Scripting contract:** `-k ''` (empty keyword) and `--json` combined with `-c`/`--tools`/`--doctor` (which have no
   JSON form) now exit 2 as usage errors instead of silently running.

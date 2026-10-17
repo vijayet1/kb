@@ -8,13 +8,28 @@ changes only when that output breaks.
 ## [Unreleased]
 
 ### Changed
+- **Scripting contract:** `-k ''` (empty keyword) and `--json` combined with `-c`/`--tools`/`--doctor` (which have no
+  JSON form) now exit 2 as usage errors instead of silently running.
+- **Scripting contract:** the "N bindings" footer is now written to stderr, so stdout holds only results.
+- `-t` with an unknown tool name suggests the closest valid one ("did you mean …").
+- `FORCE_COLOR` and `CLICOLOR_FORCE` force colour on; an empty `NO_COLOR` is treated as unset.
+- Shadowed bindings are explained, and a summary line counts conflicts and shadows.
 - Apple and VS Code shortcut data is no longer bundled or committed. It is downloaded automatically, once, the first
   time it is needed (8 s timeout, official hosts only, announced on stderr) into `~/.local/share/kb/`;
   `KB_NO_AUTO_SYNC=1` disables that. Offline runs still work and warn about what is missing.
 - The version now lives only in `pyproject.toml`; the code reads it from there (checkout) or from the installed
   package metadata.
 
+### Fixed
+- Terminal safety: output sanitising now also strips bidi controls, zero-width characters, tabs and newlines, and
+  warning messages are sanitised too.
+- Config files are split into lines on `\n` only; previously a U+2028 inside a comment could start a line that was
+  parsed as a live tmux binding.
+- A closed pipe (`kb … | head`) no longer prints a traceback.
+- The fzf preview command shell-quotes the Python interpreter path.
+
 ### Added
+- CI runs `just check` on macOS and Linux; `SECURITY.md` and Dependabot config added.
 - MIT `LICENSE`, project URLs and license metadata for the public repository.
 - `just release <patch|minor|major>` (`make release LEVEL=…`): checks the tree is clean and on `main`, runs lint and
   tests, bumps the version with `uv version`, promotes this changelog section, commits and creates an annotated

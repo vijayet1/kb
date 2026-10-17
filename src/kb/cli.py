@@ -845,10 +845,11 @@ def ensure_data(name: str) -> Path | None:
     return path if path.exists() else None
 
 
-def read_doc(name: str, required: tuple[str, ...]) -> dict | None:
-    """Load a downloaded data file; on corruption warn (with the repair command) and return None."""
+def read_doc(name: str, required: tuple[str, ...], missing_hint: str) -> dict | None:
+    """Load a downloaded data file; when missing or corrupt, warn (with the repair command) and return None."""
     p = ensure_data(name)
     if p is None:
+        WARNINGS.append(missing_hint)
         return None
     try:
         doc = json.loads(p.read_text())
@@ -863,17 +864,18 @@ def read_doc(name: str, required: tuple[str, ...]) -> dict | None:
     if len(good) != len(rows):
         WARNINGS.append(f"{name}: skipped {len(rows) - len(good)} malformed rows - run `kb --sync`")
     doc["rows"] = good
+    if not isinstance(doc.get("meta"), dict):
+        doc["meta"] = {}
     return doc
 
 
 def load_apple_docs() -> list[Binding]:
-    before = len(WARNINGS)
-    doc = read_doc(APPLE_JSON, ("section", "combo", "desc"))
+    doc = read_doc(
+        APPLE_JSON,
+        ("section", "combo", "desc"),
+        "apple docs unavailable - run `kb --sync-apple` when online to download Apple's shortcut list",
+    )
     if doc is None:
-        if len(WARNINGS) == before:  # missing, not corrupt
-            WARNINGS.append(
-                "apple docs unavailable - run `kb --sync-apple` when online to download Apple's shortcut list"
-            )
         return []
     meta = doc.get("meta", {})
     out: list[Binding] = []
@@ -1379,8 +1381,11 @@ def _nls(ext_dir, value):
 
 def load_vscode() -> list[Binding]:
     out: list[Binding] = []
-    before = len(WARNINGS)
-    doc = read_doc(VSC_JSON, ("section", "title", "command", "osx"))
+    doc = read_doc(
+        VSC_JSON,
+        ("section", "title", "command", "osx"),
+        "vscode defaults unavailable - run `kb --sync-vscode` when online to download them",
+    )
     meta = {}
     removed = set()  # (command, chord) pairs the user removed with a "-command" entry
     # 1) your own keybindings (default profile + named profiles)
@@ -1440,8 +1445,6 @@ def load_vscode() -> list[Binding]:
             if (r["command"], tuple(chord)) in removed:
                 b.note = "removed by your keybindings.json"
             out.append(b)
-    elif len(WARNINGS) == before:  # missing, not corrupt
-        WARNINGS.append("vscode defaults unavailable - run `kb --sync-vscode` when online to download them")
     return out
 
 
@@ -1858,19 +1861,27 @@ def doctor(items: list[Binding]) -> int:
     slow = {k[5:]: v for k, v in LAST_TIMINGS.items() if v > 1.0}
     for name, sec in sorted(slow.items(), key=lambda kv: -kv[1]):
         print(f"  {C('33', 'slow')}     {name} took {sec:.1f}s")
-    ap_meta = DATA_DIR / APPLE_JSON
-    if ap_meta.exists():
-        m = json.loads(ap_meta.read_text()).get("meta", {})
+
+    unreadable = []
+
+    def data_meta(name: str) -> dict | None:
+        try:
+            m = json.loads((DATA_DIR / name).read_text()).get("meta", {})
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            unreadable.append(name)
+            print(f"  {C('31', 'warning')}  {name} is unreadable - run `kb --sync` to download it again")
+            return None
+        return m if isinstance(m, dict) else {}
+
+    if (DATA_DIR / APPLE_JSON).exists() and (m := data_meta(APPLE_JSON)) is not None:
         print(f"  {C('2', 'apple')}    {_meta_line(m, 'rows')}")
-    vm = DATA_DIR / VSC_JSON
-    if vm.exists():
-        m = json.loads(vm.read_text()).get("meta", {})
+    if (DATA_DIR / VSC_JSON).exists() and (m := data_meta(VSC_JSON)) is not None:
         inst = vscode_installed_version()
         print(f"  {C('2', 'vscode')}   {_meta_line(m, 'default rows')}  (installed VS Code {inst or 'not found'})")
     for w in WARNINGS_INFO:
         print(f"  {C('2', 'note')}     {sanitize(w)}")
     print("\nread-only: kb never writes to your configs.")
-    return 1 if WARNINGS else 0
+    return 1 if WARNINGS or unreadable else 0
 
 
 def preview_command(snap: Path) -> str:

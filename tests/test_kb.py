@@ -800,6 +800,18 @@ class AutoDownload(Sandbox):
             self.assertIsNone(kb.ensure_data(kb.APPLE_JSON))
         self.assertTrue(any("could not download" in w and "unreachable" in w for w in kb.WARNINGS))
 
+    def test_failed_download_still_leaves_the_repair_hints(self):
+        def boom(timeout=20):
+            raise OSError("network is unreachable")
+
+        kb.sync_apple, kb.sync_vscode = boom, boom
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(kb.load_apple_docs(), [])
+            self.assertEqual(kb.load_vscode(), [])
+        self.assertTrue(any("could not download" in w for w in kb.WARNINGS))
+        self.assertTrue(any("kb --sync-apple" in w for w in kb.WARNINGS))
+        self.assertTrue(any("kb --sync-vscode" in w for w in kb.WARNINGS))
+
     def test_tool_scoped_run_never_downloads_unrelated_data(self):
         kb.DARWIN = True
         with contextlib.redirect_stderr(io.StringIO()):
@@ -1066,6 +1078,48 @@ class DataValidation(Sandbox):
         self.put(kb.APPLE_JSON, json.dumps({"meta": {}, "rows": [{"section": "x"}, "nope"]}))
         self.assertEqual(kb.load_apple_docs(), [])
         self.assertTrue(any("skipped" in w for w in kb.WARNINGS))
+
+    def test_valid_file_produces_no_warning(self):
+        row = {"section": "Documents", "combo": "Command-C", "desc": "Copy"}
+        self.put(kb.APPLE_JSON, json.dumps({"meta": {}, "rows": [row]}))
+        kb.load_apple_docs()
+        self.assertEqual(kb.WARNINGS, [])
+
+    def test_vscode_corrupt_file_warns_once(self):
+        self.put(kb.VSC_JSON, "{nope")
+        with mock.patch.object(kb, "VSC_USER", Path(self.tmp.name) / "none"):
+            kb.load_vscode()
+        self.assertEqual([w for w in kb.WARNINGS if "kb --sync" in w], kb.WARNINGS)
+        self.assertEqual(len(kb.WARNINGS), 1)
+
+    def test_empty_osx_row_survives(self):
+        row = {"section": "s", "title": "t", "command": "c", "osx": ""}
+        self.put(kb.VSC_JSON, json.dumps({"meta": {}, "rows": [row]}))
+        self.assertEqual(kb.read_doc(kb.VSC_JSON, ("section", "title", "command", "osx"), "x")["rows"], [row])
+        self.assertEqual(kb.WARNINGS, [])
+
+    def test_rows_not_a_list_and_top_level_list(self):
+        for text in ('{"meta": {}, "rows": 5}', "[1, 2]"):
+            kb.WARNINGS.clear()
+            self.put(kb.APPLE_JSON, text)
+            self.assertEqual(kb.load_apple_docs(), [])
+            self.assertEqual(len(kb.WARNINGS), 1)
+            self.assertIn("kb --sync", kb.WARNINGS[0])
+
+    def test_non_dict_meta_is_coerced(self):
+        row = {"section": "Documents", "combo": "Command-C", "desc": "Copy"}
+        self.put(kb.APPLE_JSON, json.dumps({"meta": 5, "rows": [row]}))
+        kb.load_apple_docs()
+        self.assertEqual(kb.WARNINGS, [])
+
+    def test_doctor_survives_corrupt_data_files(self):
+        self.put(kb.APPLE_JSON, "{nope")
+        self.put(kb.VSC_JSON, "[1]")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = kb.doctor([])
+        self.assertEqual(code, 1)
+        self.assertIn("kb --sync", out.getvalue())
 
     def test_saved_doc_records_schema_and_row_hash(self):
         doc = kb._save_doc("t.json", "https://x", b"raw", [{"a": 1}], 1)

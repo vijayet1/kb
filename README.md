@@ -37,14 +37,16 @@ Pick whichever tool you already use — all of them install the same `kb` comman
 
 **First run needs the network once.** Apple's and VS Code's default shortcut lists are not shipped with `kb`; the first
 run that needs them downloads them from the official pages (`support.apple.com`, `code.visualstudio.com` — nothing else)
-into `~/.local/share/kb/` and says so on stderr. Later runs are offline. `kb --sync` refreshes them; set
-`KB_NO_AUTO_SYNC=1` to forbid automatic downloads (then run `kb --sync` yourself). Offline or blocked, `kb` still works for
-everything else and warns about what is missing. See *Data and licensing* below.
+into `~/.local/share/kb/` (a 0700 directory; the files are mode 0600) and says so on stderr. Redirects are followed only
+over https on the same official host. `XDG_DATA_HOME`/`XDG_CONFIG_HOME` must be absolute paths; relative values are
+ignored. Later runs are offline. `kb --sync` refreshes them; set `KB_NO_AUTO_SYNC=1` to forbid automatic
+downloads (then run `kb --sync` yourself). Offline or blocked, `kb` still works for everything else and warns about what is
+missing. See *Data and licensing* below.
 
 ## Develop
 
     just check         # or: make check — ruff + ruff format --check + mypy, then the tests
-    just test          # or: make test  — isolated uv env, 46 tests
+    just test          # or: make test  — isolated uv env
     just fmt           # apply formatter and safe lint fixes
     uv run kb ...      # run from the checkout
     just sync          # re-download the Apple + VS Code shortcut data
@@ -72,7 +74,7 @@ tools (e.g. Microsoft Defender for Endpoint) scan every file a *new process* ope
 many small files take seconds; `kb` therefore reads as few files as possible (see below). If it still stalls, ask your
 admin to exclude the `kb` tool environment (`~/.local/share/uv/tools/kb`) from real-time scanning.
 
-Layout: `src/kb/cli.py` (the tool) · `tests/` · `pyproject.toml` (uv_build
+Layout: `src/kb/cli.py` (the tool) · `src/kb/net.py` (downloads and data-file I/O) · `tests/` · `pyproject.toml` (uv_build
 backend) + `uv.lock` · `.python-version` (3.12 for development; the code supports 3.11+).
 
 ## How it works
@@ -126,5 +128,5 @@ VS Code (`-t vscode`)
 
 `kb` is MIT-licensed (see `LICENSE`). The shortcut lists it reads from Apple's and Microsoft's pages belong to their
 owners: they are downloaded to *your* machine for your own use and are deliberately **not** stored in this repository,
-its history or the published package (`.gitignore` blocks them; a test fails if the package ever contains a JSON data
-file). Everything else `kb` shows comes from your own configuration files.
+its history or the published package (`.gitignore` blocks them; a test checks that the source package directory
+contains no JSON data file). Everything else `kb` shows comes from your own configuration files.

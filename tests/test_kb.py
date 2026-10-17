@@ -1,25 +1,41 @@
 """Run: uv run python -m unittest discover -s tests -v   (or: make test)"""
 
+import ast
 import contextlib
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
 import kb.cli as kb
+from kb import net
 
-# Tests must never touch the network: first-run downloads are opt-in per test (see AutoDownload).
-os.environ["KB_NO_AUTO_SYNC"] = "1"
+
+def run_kb_isolated(args, env=None, **kw):
+    """Run `python -m kb` offline with a throwaway HOME/XDG dirs: never reads or writes real state."""
+    with tempfile.TemporaryDirectory() as d:
+        e = dict(os.environ, HOME=d, XDG_CONFIG_HOME=d, XDG_DATA_HOME=d, KB_NO_AUTO_SYNC="1", NO_COLOR="1")
+        e.update(env or {})
+        return subprocess.run(
+            [sys.executable, "-m", "kb", *args], capture_output=True, text=True, env=e, check=False, **kw
+        )
 
 
 class Sandbox(unittest.TestCase):
-    """Point kb at a throwaway HOME so tests never read real configs."""
+    """Point kb at a throwaway HOME so tests never read real configs.
+
+    Tests must never touch the network: auto-sync is off and real requests raise
+    (first-run downloads are opt-in per test, see AutoDownload).
+    """
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -31,6 +47,17 @@ class Sandbox(unittest.TestCase):
         kb.DATA_DIR = self.home / ".local/share/kb"
         kb.HOME, kb.CFG, kb.DARWIN = self.home, self.cfg, False
         kb.WARNINGS.clear()
+
+        def _no_net(*a, **k):
+            raise AssertionError("test attempted a real network request")
+
+        for p in (
+            mock.patch.object(urllib.request.OpenerDirector, "open", _no_net),
+            mock.patch("urllib.request.urlopen", _no_net),
+            mock.patch.dict(os.environ, {"KB_NO_AUTO_SYNC": "1"}),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
 
     def tearDown(self):
         kb.HOME, kb.CFG, kb.DARWIN = self.saved[:3]
@@ -436,13 +463,7 @@ class Watchdog(Sandbox):
             kb.LOADERS = saved
 
     def test_debug_prints_timings(self):
-        r = subprocess.run(
-            [sys.executable, "-m", "kb", "--debug", "--no-fzf", "zzz-nothing"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
+        r = run_kb_isolated(["--debug", "--no-fzf", "zzz-nothing"], timeout=60)
         self.assertRegex(r.stderr, r"kb: \w+\s+\d+ ms")
 
 
@@ -492,9 +513,7 @@ class SearchModes(unittest.TestCase):
         self.assertEqual(kb.search(self.items, ["alt"], by="keys"), [self.opt_p])
 
     def test_cli_rejects_unknown_modifier(self):
-        r = subprocess.run(
-            [sys.executable, "-m", "kb", "-m", "hyper"], capture_output=True, text=True, timeout=30, check=False
-        )
+        r = run_kb_isolated(["-m", "hyper"], timeout=30)
         self.assertEqual(r.returncode, 2)
         self.assertIn("unknown modifier", r.stderr)
 
@@ -612,9 +631,7 @@ class ToolScopedLoading(Sandbox):
         self.assertEqual(kb.known_tools(), ["macos", "tmux", "vscode"])
 
     def test_cli_rejects_unknown_tool_with_choices(self):
-        r = subprocess.run(
-            [sys.executable, "-m", "kb", "-t", "emacs"], capture_output=True, text=True, timeout=30, check=False
-        )
+        r = run_kb_isolated(["-t", "emacs"], timeout=30)
         self.assertEqual(r.returncode, 2)
         self.assertIn("unknown tool 'emacs'", r.stderr)
         self.assertIn("vscode", r.stderr)
@@ -667,10 +684,7 @@ class VersionSource(Sandbox):
 
 class CLI(unittest.TestCase):
     def run_kb(self, *args, env=None):
-        e = dict(os.environ, NO_COLOR="1", **(env or {}))
-        return subprocess.run(
-            [sys.executable, "-m", "kb", *args], capture_output=True, text=True, env=e, timeout=30, check=False
-        )
+        return run_kb_isolated(args, env=env, timeout=30)
 
     def test_exit_codes(self):
         self.assertEqual(self.run_kb("--version").returncode, 0)
@@ -679,10 +693,42 @@ class CLI(unittest.TestCase):
 
     def test_json_schema(self):
         with tempfile.TemporaryDirectory() as d:
-            r = self.run_kb("--json", env={"HOME": d, "XDG_CONFIG_HOME": d})
+            r = self.run_kb("--json", env={"HOME": d, "XDG_CONFIG_HOME": d, "XDG_DATA_HOME": d})
             data = json.loads(r.stdout)
             self.assertEqual(data["schema_version"], kb.SCHEMA_VERSION)
             self.assertIsInstance(data["bindings"], list)
+
+
+class TerminalSafety(Sandbox):
+    def test_sanitize_neutralises_layout_and_spoofing_characters(self):
+        self.assertEqual(kb.sanitize("a\tb\nc"), "a b c")
+        self.assertEqual(kb.sanitize("x\u202eevil\u202c"), "xevil")  # bidi override
+        self.assertEqual(kb.sanitize("a\u200bb\u2028c\u2029d"), "abcd")  # zero-width, line/para separators
+        self.assertEqual(kb.sanitize("\x1b[31mred\x1b[0m"), "[31mred[0m")  # ESC dropped as before
+
+    def test_binding_text_has_no_tabs_or_newlines(self):
+        b = kb.Binding("x", "k\tk", "line1\nline2")
+        self.assertNotIn("\t", b.keys)
+        self.assertNotIn("\n", b.desc)
+
+    def test_read_lines_splits_on_newline_only(self):
+        p = self.home / "f.conf"
+        p.write_text("a\u2028b\r\nc\n")
+        self.assertEqual(kb.read_lines(p), ["a\u2028b", "c", ""])
+
+    def test_unicode_line_separator_in_a_comment_cannot_create_a_binding(self):
+        # splitlines() treats U+2028 as a line break, so the text after it in a *comment* became a live binding.
+        self.write("tmux/tmux.conf", "# harmless comment\u2028bind z kill-server\nbind b split-window\n")
+        keys = {b.keys for b in kb.load_tmux()}
+        self.assertNotIn("Ctrl-B › z", keys)
+        self.assertIn("Ctrl-B › b", keys)
+
+    def test_warnings_are_sanitised_on_stderr(self):
+        kb.WARNINGS.append("bad \x1b]0;pwn\x07 thing")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            kb.load_all(tools=["tmux"])
+        self.assertNotIn("\x1b", err.getvalue())
 
 
 class Packaging(Sandbox):
@@ -763,16 +809,351 @@ class AutoDownload(Sandbox):
             self.assertIsNone(kb.ensure_data(kb.APPLE_JSON))
         self.assertTrue(any("could not download" in w and "unreachable" in w for w in kb.WARNINGS))
 
+    def test_failed_download_still_leaves_the_repair_hints(self):
+        def boom(timeout=20):
+            raise OSError("network is unreachable")
+
+        kb.sync_apple, kb.sync_vscode = boom, boom
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(kb.load_apple_docs(), [])
+            self.assertEqual(kb.load_vscode(), [])
+        self.assertTrue(any("could not download" in w for w in kb.WARNINGS))
+        self.assertTrue(any("kb --sync-apple" in w for w in kb.WARNINGS))
+        self.assertTrue(any("kb --sync-vscode" in w for w in kb.WARNINGS))
+
     def test_tool_scoped_run_never_downloads_unrelated_data(self):
         kb.DARWIN = True
         with contextlib.redirect_stderr(io.StringIO()):
             kb.load_all(tools=["tmux"])
         self.assertEqual(self.synced, [])
 
+    def test_sync_failure_text_is_sanitised(self):
+        def boom(timeout=20):
+            raise ValueError("bad \x1b[31m thing")
+
+        kb.sync_apple = boom
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            kb.main(["--sync-apple"])
+        self.assertIn("sync of", err.getvalue())
+        self.assertNotIn("\x1b", err.getvalue())
+
     def test_save_leaves_no_temp_files_behind(self):
         rows = [{"section": "s", "combo": "c", "desc": "d"}] * 60
         kb._save_doc(kb.APPLE_JSON, kb.APPLE_URL, b"raw", rows, 50)
         self.assertEqual(sorted(p.name for p in kb.DATA_DIR.iterdir()), [kb.APPLE_JSON])
+
+
+class ScriptingContract(Sandbox):
+    def run_main(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = kb.main(list(argv))
+            except SystemExit as e:
+                rc = e.code
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_conflict_report_explains_shadows_and_summarises(self):
+        items = [
+            kb.Binding("aerospace", "⌥⇧←", "Join left", "alt+shift+left"),
+            kb.Binding("macos", "⌥⇧←", "Select word left", "alt+shift+left", "text"),
+        ]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            kb.report_conflicts(items)
+        text = out.getvalue()
+        self.assertIn("shadow = ", text)
+        self.assertIn("0 conflicts, 1 shadow (shadows are informational)", text)
+
+    def test_empty_key_is_a_usage_error(self):
+        rc, out, err = self.run_main("-k", "  ", "--no-fzf")
+        self.assertEqual((rc, out), (2, ""))
+        self.assertIn("--key", err)
+
+    def test_json_with_unsupported_modes_fails_loudly(self):
+        for flag in ("-c", "--tools", "--doctor"):
+            rc, out, err = self.run_main("--json", flag)
+            self.assertEqual((rc, out), (2, ""), flag)
+            self.assertIn("--json", err)
+
+    def test_table_footer_goes_to_stderr(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            kb.print_table([kb.Binding("x", "⌘A", "do a"), kb.Binding("x", "⌘B", "do b")])
+        self.assertEqual(len(out.getvalue().splitlines()), 2)
+        self.assertIn("2 bindings", err.getvalue())
+
+    def test_unknown_tool_suggests_the_closest_name(self):
+        rc, _out, err = self.run_main("-t", "tmx")
+        self.assertEqual(rc, 2)
+        self.assertIn("did you mean 'tmux'", err)
+
+    def test_closed_pipe_is_silent(self):
+        code = "import kb.cli as k; k.main = lambda: [print('x' * 80) for _ in range(5000)] and 0; k.run()"
+        cmd = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)} | head -n 1 >/dev/null"
+        r = subprocess.run(["sh", "-c", cmd], check=False, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.stderr, "")
+
+
+class Colour(unittest.TestCase):
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    def env(self, **kw):
+        return mock.patch.dict(os.environ, kw, clear=True)
+
+    def test_precedence(self):
+        tty, pipe = self.Tty(), io.StringIO()
+        with self.env():
+            self.assertTrue(kb.want_color(tty))
+            self.assertFalse(kb.want_color(pipe))
+        with self.env(NO_COLOR="1"):
+            self.assertFalse(kb.want_color(tty))
+        with self.env(NO_COLOR=""):
+            self.assertTrue(kb.want_color(tty))  # empty NO_COLOR is unset (no-color.org)
+        with self.env(FORCE_COLOR="1"):
+            self.assertTrue(kb.want_color(pipe))
+        with self.env(FORCE_COLOR="0"):
+            self.assertFalse(kb.want_color(pipe))
+        with self.env(NO_COLOR="1", FORCE_COLOR="1"):
+            self.assertFalse(kb.want_color(pipe))  # NO_COLOR wins
+
+
+class FzfPreview(unittest.TestCase):
+    def test_preview_command_quotes_interpreter_and_script(self):
+        with (
+            mock.patch.object(kb.sys, "executable", "/tmp/my dir/py;touch pwn"),
+            mock.patch.object(kb.sys, "argv", ["/tmp/my dir/kb"]),
+        ):
+            cmd = kb.preview_command(Path("/tmp/snap dir/s.json"))
+        parts = shlex.split(cmd)
+        self.assertEqual(parts[0], "/tmp/my dir/py;touch pwn")
+        self.assertEqual(parts[1], str(Path("/tmp/my dir/kb").resolve()))
+        self.assertEqual(parts[-1], "/tmp/snap dir/s.json")
+        self.assertIn("{1}", cmd)
+
+
+class NetIsolation(unittest.TestCase):
+    SRC = Path(kb.__file__).parent
+
+    BANNED = ("urllib.request", "http.client", "socket", "ssl")
+
+    @staticmethod
+    def imports_in(source, package="kb"):
+        """Every module name a source text can import, with relative imports resolved against `package`."""
+        names = set()
+        for n in ast.walk(ast.parse(source)):
+            if isinstance(n, ast.Import):
+                names |= {a.name for a in n.names}
+            elif isinstance(n, ast.ImportFrom):
+                base = n.module or ""
+                if n.level:
+                    parts = package.split(".")[: len(package.split(".")) - (n.level - 1)]
+                    base = ".".join(parts + ([n.module] if n.module else []))
+                names.add(base)
+                names |= {f"{base}.{a.name}" for a in n.names}
+        return names
+
+    def imports_of(self, path):
+        return self.imports_in(path.read_text())
+
+    @classmethod
+    def banned_in(cls, imported):
+        return {m for m in imported if any(m == b or m.startswith(b + ".") for b in cls.BANNED)}
+
+    def test_only_net_module_imports_the_network_stack(self):
+        offenders = {}
+        for f in self.SRC.glob("*.py"):
+            bad = self.banned_in(self.imports_of(f))
+            if bad and f.name != "net.py":
+                offenders[f.name] = bad
+        self.assertEqual(offenders, {})
+
+    def test_net_module_is_stateless_and_does_not_import_cli(self):
+        imported = self.imports_of(self.SRC / "net.py")
+        self.assertFalse({"kb.cli", "cli"} & imported, imported)  # absolute or relative import of the CLI module
+
+    def test_guard_detects_from_import_forms_of_the_network_stack(self):
+        for src in (
+            "from urllib import request",
+            "from http import client",
+            "from urllib.request import urlopen",
+            "import socket",
+            "from ssl import create_default_context",
+        ):
+            self.assertTrue(self.banned_in(self.imports_in(src)), src)
+        self.assertFalse(self.banned_in(self.imports_in("import urllib.parse\nfrom . import net")))
+
+    def test_guard_detects_cli_imports_in_all_forms(self):
+        for src in (
+            "from . import cli",
+            "from .cli import x",
+            "from kb import cli",
+            "import kb.cli",
+            "from kb.cli import x",
+        ):
+            self.assertIn("kb.cli", self.imports_in(src), src)
+        self.assertIn("kb.net", self.imports_in("from .net import x"))
+
+    def test_cli_wrappers_still_delegate(self):
+        self.assertTrue(callable(kb._fetch) and callable(kb._save_doc))
+        from kb import net
+
+        self.assertTrue(callable(net.fetch) and callable(net.save_doc))
+
+
+class DataDirSafety(Sandbox):
+    def test_sandbox_blocks_real_network(self):
+        with self.assertRaises(AssertionError):
+            urllib.request.urlopen("https://support.apple.com/")
+
+    def test_relative_xdg_values_are_ignored(self):
+        fb = Path("/home/u/.local/share")
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "rel/dir"}):
+            self.assertEqual(kb.xdg_dir("XDG_DATA_HOME", fb), fb)
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/abs/data"}):
+            self.assertEqual(kb.xdg_dir("XDG_DATA_HOME", fb), Path("/abs/data"))
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": ""}):
+            self.assertEqual(kb.xdg_dir("XDG_DATA_HOME", fb), fb)
+
+    def test_saved_data_is_private(self):
+        kb._save_doc("t.json", "https://x", b"raw", [{"a": 1}], 1)
+        self.assertEqual(oct((kb.DATA_DIR / "t.json").stat().st_mode & 0o777), "0o600")
+        self.assertEqual(oct(kb.DATA_DIR.stat().st_mode & 0o777), "0o700")
+
+    def test_write_refuses_a_symlinked_temp_file(self):
+        kb.DATA_DIR.mkdir(parents=True)
+        victim = self.home / "victim.txt"
+        victim.write_text("keep")
+        (kb.DATA_DIR / f"t.json.{os.getpid()}.tmp").symlink_to(victim)
+        with self.assertRaises(OSError):
+            kb._save_doc("t.json", "https://x", b"raw", [{"a": 1}], 1)
+        self.assertEqual(victim.read_text(), "keep")
+
+
+class Fetch(unittest.TestCase):
+    def test_redirect_to_another_host_is_refused_before_following(self):
+        h = net.SameHostRedirect("example.com")
+        req = urllib.request.Request("https://example.com/a")
+        with self.assertRaises(ValueError):
+            h.redirect_request(req, None, 302, "Found", {}, "https://evil.example/b")
+        with self.assertRaises(ValueError):
+            h.redirect_request(req, None, 302, "Found", {}, "http://example.com/b")  # downgrade
+        ok = h.redirect_request(req, None, 302, "Found", {}, "https://example.com/b")
+        self.assertEqual(ok.full_url, "https://example.com/b")
+
+    def test_default_opener_uses_same_host_redirect_only(self):
+        handlers = urllib.request.build_opener(net.SameHostRedirect("x")).handlers
+        self.assertTrue(any(isinstance(h, net.SameHostRedirect) for h in handlers))
+        self.assertFalse(any(type(h) is urllib.request.HTTPRedirectHandler for h in handlers))
+
+    def test_total_deadline_aborts_a_slow_drip(self):
+        class Slow:
+            def read(self, n):
+                time.sleep(0.05)
+                return b"x"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class Op:
+            def open(self, req, timeout=None):
+                return Slow()
+
+        with self.assertRaises(ValueError) as cm:
+            kb._fetch("https://example.com/", "example.com", timeout=0.2, opener=Op())
+        self.assertIn("deadline", str(cm.exception))
+
+    def test_size_cap_is_enforced_while_reading(self):
+        class Big:
+            def read(self, n):
+                return b"x" * n
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class Op:
+            def open(self, req, timeout=None):
+                return Big()
+
+        with self.assertRaises(ValueError):
+            kb._fetch("https://example.com/", "example.com", timeout=5, opener=Op())
+
+    def test_wrong_host_or_scheme_still_refused(self):
+        for url in ("http://example.com/", "https://evil.example/"):
+            with self.assertRaises(ValueError):
+                kb._fetch(url, "example.com")
+
+
+class DataValidation(Sandbox):
+    def put(self, name, text):
+        kb.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (kb.DATA_DIR / name).write_text(text)
+
+    def test_truncated_json_is_a_warning_not_a_crash(self):
+        self.put(kb.APPLE_JSON, '{"meta": {}, "rows": [')
+        self.assertEqual(kb.load_apple_docs(), [])
+        self.assertTrue(any("kb --sync" in w for w in kb.WARNINGS))
+
+    def test_rows_missing_fields_are_skipped_and_counted(self):
+        self.put(kb.APPLE_JSON, json.dumps({"meta": {}, "rows": [{"section": "x"}, "nope"]}))
+        self.assertEqual(kb.load_apple_docs(), [])
+        self.assertTrue(any("skipped" in w for w in kb.WARNINGS))
+
+    def test_valid_file_produces_no_warning(self):
+        row = {"section": "Documents", "combo": "Command-C", "desc": "Copy"}
+        self.put(kb.APPLE_JSON, json.dumps({"meta": {}, "rows": [row]}))
+        kb.load_apple_docs()
+        self.assertEqual(kb.WARNINGS, [])
+
+    def test_vscode_corrupt_file_warns_once(self):
+        self.put(kb.VSC_JSON, "{nope")
+        with mock.patch.object(kb, "VSC_USER", Path(self.tmp.name) / "none"):
+            kb.load_vscode()
+        self.assertEqual([w for w in kb.WARNINGS if "kb --sync" in w], kb.WARNINGS)
+        self.assertEqual(len(kb.WARNINGS), 1)
+
+    def test_empty_osx_row_survives(self):
+        row = {"section": "s", "title": "t", "command": "c", "osx": ""}
+        self.put(kb.VSC_JSON, json.dumps({"meta": {}, "rows": [row]}))
+        self.assertEqual(kb.read_doc(kb.VSC_JSON, ("section", "title", "command", "osx"), "x")["rows"], [row])
+        self.assertEqual(kb.WARNINGS, [])
+
+    def test_rows_not_a_list_and_top_level_list(self):
+        for text in ('{"meta": {}, "rows": 5}', "[1, 2]"):
+            kb.WARNINGS.clear()
+            self.put(kb.APPLE_JSON, text)
+            self.assertEqual(kb.load_apple_docs(), [])
+            self.assertEqual(len(kb.WARNINGS), 1)
+            self.assertIn("kb --sync", kb.WARNINGS[0])
+
+    def test_non_dict_meta_is_coerced(self):
+        row = {"section": "Cut, Copy, Paste", "combo": "Command-C", "desc": "Copy"}
+        self.put(kb.APPLE_JSON, json.dumps({"meta": 5, "rows": [row]}))
+        self.assertEqual(len(kb.load_apple_docs()), 1)
+        self.assertEqual(kb.WARNINGS, [])
+
+    def test_doctor_survives_corrupt_data_files(self):
+        self.put(kb.APPLE_JSON, "{nope")
+        self.put(kb.VSC_JSON, "[1]")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = kb.doctor([])
+        self.assertEqual(code, 1)
+        self.assertIn("kb --sync", out.getvalue())
+
+    def test_saved_doc_records_schema_and_row_hash(self):
+        doc = kb._save_doc("t.json", "https://x", b"raw", [{"a": 1}], 1)
+        self.assertEqual(doc["meta"]["schema"], 1)
+        self.assertEqual(len(doc["meta"]["rows_sha256"]), 64)
 
 
 if __name__ == "__main__":

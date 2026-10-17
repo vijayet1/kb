@@ -14,8 +14,7 @@ kb --json            machine-readable output
 import argparse
 import contextlib
 import ctypes
-import hashlib
-import http.client
+import difflib
 import importlib.metadata
 import json
 import os
@@ -28,12 +27,14 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.parse
-import urllib.request
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
+
+from . import net
+from .net import NETWORK_ERRORS, xdg_dir
 
 try:
     import tomllib
@@ -59,17 +60,26 @@ def _version() -> str:
 VERSION = _version()
 SCHEMA_VERSION = 1
 HOME = Path.home()
-CFG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
+CFG = xdg_dir("XDG_CONFIG_HOME", HOME / ".config")
 DARWIN = sys.platform == "darwin"
 DEFAULTS_BIN = "/usr/bin/defaults"  # absolute: never resolve system tools through $PATH
 LOADER_BUDGET = float(os.environ.get("KB_LOADER_TIMEOUT", "10"))  # seconds any one source may take
+
+
+def want_color(stream) -> bool:
+    env = os.environ
+    if env.get("NO_COLOR"):
+        return False
+    if any(env.get(v, "") not in ("", "0") for v in ("FORCE_COLOR", "CLICOLOR_FORCE")):
+        return True
+    return stream.isatty()
 
 
 @dataclass
 class Settings:
     """Process-wide switches set once from the command line (attribute assignment, not `global`)."""
 
-    color: bool = field(default_factory=lambda: sys.stdout.isatty() and "NO_COLOR" not in os.environ)
+    color: bool = field(default_factory=lambda: want_color(sys.stdout))
     include_unnamed: bool = False  # --all-system
 
 
@@ -137,7 +147,6 @@ KEY_SYM = {
 }
 
 
-_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _SECRET = re.compile(
     r"(?i)((?:token|secret|passw(?:or)?d|passwd|api[_-]?key|apikey|auth|bearer|credential)s?[\w-]*\s*[=:]\s*|"
     r"authorization:\s*(?:bearer|basic)\s+|--?(?:token|password|passwd|secret|api-key)[= ])"
@@ -148,8 +157,21 @@ _TOKENISH = re.compile(
 )
 
 
+_DROP_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+
+
 def sanitize(text: object) -> str:
-    return _CTRL.sub("", str(text))
+    """Make config/web text safe to print: no escape sequences, bidi/zero-width tricks, or layout characters."""
+    return "".join(
+        " " if ch in "\t\n\r" else ch
+        for ch in str(text)
+        if ch in "\t\n\r" or unicodedata.category(ch) not in _DROP_CATEGORIES
+    )
+
+
+def read_lines(p: Path) -> list[str]:
+    """Lines split on \\n only: str.splitlines() also splits on U+2028/U+0085 and would let a file hide a binding."""
+    return p.read_text().replace("\r\n", "\n").split("\n")
 
 
 def redact(text: str) -> str:
@@ -259,7 +281,7 @@ def load_aerospace() -> list[Binding]:
     if not p.exists():
         return out
     data = tomllib.loads(p.read_text())
-    lines = p.read_text().splitlines()
+    lines = read_lines(p)
     for mode, body in data.get("mode", {}).items():
         for key, cmds in body.get("binding", {}).items():
             cl = cmds if isinstance(cmds, list) else [cmds]
@@ -292,7 +314,7 @@ def load_skhd() -> list[Binding]:
     out: list[Binding] = []
     if not p.exists():
         return out
-    for i, line in enumerate(p.read_text().splitlines(), 1):
+    for i, line in enumerate(read_lines(p), 1):
         s = line.strip()
         if not s or s.startswith("#") or ":" not in s:
             continue
@@ -387,7 +409,7 @@ def load_tmux() -> list[Binding]:
         if not p.exists() or p.resolve() in seen:
             continue
         seen.add(p.resolve())
-        for i, line in enumerate(p.read_text().splitlines(), 1):
+        for i, line in enumerate(read_lines(p), 1):
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
@@ -482,7 +504,7 @@ def load_ghostty() -> list[Binding]:
     for p in [CFG / "ghostty" / "config", CFG / "ghostty" / "picker.config"]:
         if not p.exists():
             continue
-        for i, line in enumerate(p.read_text().splitlines(), 1):
+        for i, line in enumerate(read_lines(p), 1):
             m = re.match(r"\s*keybind\s*=\s*(.+?)=(.+)", line)
             if m:
                 n = parse_combo(m[1].replace("+", "-").replace("super", "cmd"))
@@ -646,7 +668,7 @@ SYSTEM_HOTKEY_NAMES = {
 APPLE_URL = "https://support.apple.com/en-us/102650"
 APPLE_HOST = "support.apple.com"
 APPLE_MAX_BYTES = 5_000_000
-DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share") / "kb"
+DATA_DIR = xdg_dir("XDG_DATA_HOME", HOME / ".local/share") / "kb"
 APPLE_JSON = "apple-shortcuts.json"
 AUTO_SYNC_TIMEOUT = 8  # seconds; first-run downloads must fit inside the per-source budget
 STANDARD_KEY_BINDING = Path("/System/Library/Frameworks/AppKit.framework/Resources/StandardKeyBinding.dict")
@@ -776,42 +798,19 @@ def parse_apple_html(html_text):
     return p.rows
 
 
-def _fetch(url: str, host: str, timeout: float = 20) -> bytes:
-    """GET url over https from exactly `host`; bounded size/time; refuses redirects to other hosts."""
-    u = urllib.parse.urlparse(url)
-    if u.scheme != "https" or u.hostname != host:
-        raise ValueError(f"refusing to fetch {url!r}: only https://{host}/ is allowed")
-    req = urllib.request.Request(  # noqa: S310 - https + exact host validated above
-        url, headers={"User-Agent": f"kb/{VERSION} (+local keybinding index)"}
+def _fetch(url: str, host: str, timeout: float = 20, *, opener=None) -> bytes:
+    return net.fetch(
+        url,
+        host,
+        timeout=timeout,
+        max_bytes=APPLE_MAX_BYTES,
+        user_agent=f"kb/{VERSION} (+local keybinding index)",
+        opener=opener,
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - same validated request
-        if urllib.parse.urlparse(r.geturl()).hostname != host:
-            raise ValueError(f"redirected away from {host}; aborting")
-        raw = r.read(APPLE_MAX_BYTES + 1)
-    if len(raw) > APPLE_MAX_BYTES:
-        raise ValueError("response too large")
-    return raw
 
 
 def _save_doc(name, url, raw, rows, min_rows, extra=None):
-    if len(rows) < min_rows:
-        raise ValueError(f"only {len(rows)} rows parsed - page layout probably changed; keeping old data")
-    doc = {
-        "meta": {
-            "source": url,
-            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "sha256": hashlib.sha256(raw).hexdigest(),
-            "kb_version": VERSION,
-            "rows": len(rows),
-            **(extra or {}),
-        },
-        "rows": rows,
-    }
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = DATA_DIR / f"{name}.{os.getpid()}.tmp"  # unique per process: two kb runs may sync at once
-    tmp.write_text(json.dumps(doc, indent=1, ensure_ascii=False) + "\n")
-    tmp.replace(DATA_DIR / name)
-    return doc
+    return net.save_doc(DATA_DIR, name, url, raw, rows, min_rows, version=VERSION, extra=extra)
 
 
 def sync_apple(url: str = APPLE_URL, timeout: float = 20) -> dict:
@@ -840,18 +839,44 @@ def ensure_data(name: str) -> Path | None:
     )
     try:
         sync(timeout=AUTO_SYNC_TIMEOUT)
-    except (OSError, ValueError, http.client.HTTPException) as e:
+    except NETWORK_ERRORS as e:
         WARNINGS.append(f"could not download {name}: {e}")
         return None
     return path if path.exists() else None
 
 
-def load_apple_docs() -> list[Binding]:
-    p = ensure_data(APPLE_JSON)
+def read_doc(name: str, required: tuple[str, ...], missing_hint: str) -> dict | None:
+    """Load a downloaded data file; when missing or corrupt, warn (with the repair command) and return None."""
+    p = ensure_data(name)
     if p is None:
-        WARNINGS.append("apple docs unavailable - run `kb --sync-apple` when online to download Apple's shortcut list")
+        WARNINGS.append(missing_hint)
+        return None
+    try:
+        doc = json.loads(p.read_text())
+        rows = doc["rows"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        WARNINGS.append(f"{name} is unreadable ({type(e).__name__}) - run `kb --sync` to download it again")
+        return None
+    if not isinstance(rows, list):
+        WARNINGS.append(f"{name} is unreadable (rows is not a list) - run `kb --sync` to download it again")
+        return None
+    good = [r for r in rows if isinstance(r, dict) and all(isinstance(r.get(k), str) for k in required)]
+    if len(good) != len(rows):
+        WARNINGS.append(f"{name}: skipped {len(rows) - len(good)} malformed rows - run `kb --sync`")
+    doc["rows"] = good
+    if not isinstance(doc.get("meta"), dict):
+        doc["meta"] = {}
+    return doc
+
+
+def load_apple_docs() -> list[Binding]:
+    doc = read_doc(
+        APPLE_JSON,
+        ("section", "combo", "desc"),
+        "apple docs unavailable - run `kb --sync-apple` when online to download Apple's shortcut list",
+    )
+    if doc is None:
         return []
-    doc = json.loads(p.read_text())
     meta = doc.get("meta", {})
     out: list[Binding] = []
     for row in doc.get("rows", []):
@@ -1356,7 +1381,11 @@ def _nls(ext_dir, value):
 
 def load_vscode() -> list[Binding]:
     out: list[Binding] = []
-    docs = ensure_data(VSC_JSON)
+    doc = read_doc(
+        VSC_JSON,
+        ("section", "title", "command", "osx"),
+        "vscode defaults unavailable - run `kb --sync-vscode` when online to download them",
+    )
     meta = {}
     removed = set()  # (command, chord) pairs the user removed with a "-command" entry
     # 1) your own keybindings (default profile + named profiles)
@@ -1393,8 +1422,8 @@ def load_vscode() -> list[Binding]:
                 )
             )
     # 2) official defaults (synced from Microsoft's reference page)
-    if docs is not None:
-        d = json.loads(docs.read_text())
+    if doc is not None:
+        d = doc
         meta = d.get("meta", {})
         for r in d.get("rows", []):
             if not r.get("osx"):
@@ -1416,8 +1445,6 @@ def load_vscode() -> list[Binding]:
             if (r["command"], tuple(chord)) in removed:
                 b.note = "removed by your keybindings.json"
             out.append(b)
-    else:
-        WARNINGS.append("vscode defaults unavailable - run `kb --sync-vscode` when online to download them")
     return out
 
 
@@ -1520,7 +1547,7 @@ def load_zsh() -> list[Binding]:
     for p in [HOME / ".dotfiles/zsh/.zshrc", HOME / ".zshrc"]:
         if not p.exists():
             continue
-        for i, line in enumerate(p.read_text().splitlines(), 1):
+        for i, line in enumerate(read_lines(p), 1):
             m = re.match(r"\s*bindkey\s+(?:-\w\s+)?'([^']+)'\s+(\S+)", line)
             if m:
                 k = m[1].replace("^x", "Ctrl-X ").replace("^X", "Ctrl-X ").replace("^e", "e")
@@ -1610,7 +1637,7 @@ def load_all(debug: bool = False, tools: Iterable[str] | None = None) -> list[Bi
         for name, sec in sorted(timings.items(), key=lambda kv: -kv[1]):
             print(f"kb: {name[5:]:<10} {sec * 1000:7.0f} ms", file=sys.stderr)
     for w in WARNINGS:
-        print(f"kb: warning: {w}", file=sys.stderr)
+        print(f"kb: warning: {sanitize(w)}", file=sys.stderr)
     return out
 
 
@@ -1769,7 +1796,7 @@ def print_table(items: list[Binding]) -> None:
     kw = min(max(len(b.keys) for b in items), 28)
     for b in items:
         print(row(b, kw))
-    print(C("2", f"\n{len(items)} binding{'s' if len(items) != 1 else ''}"))
+    print(C("2", f"{len(items)} binding{'s' if len(items) != 1 else ''}"), file=sys.stderr)
 
 
 def detail(b: Binding, items: list[Binding]) -> str:
@@ -1792,12 +1819,18 @@ def report_conflicts(items: list[Binding]) -> int:
         print(f"{C('31', 'CONFLICT') if cross else C('33', 'duplicate')}  {C('1', pretty(norm))}  ({scope})")
         for b in bs:
             print(f"    {C(TOOL_COLOR.get(b.tool, '37'), f'{b.tool:<10}')} {b.desc}   {C('2', b.src)}")
+    if sh:
+        print(C("2", "shadow = a global tool captures this key before the app sees it (informational, not a failure)"))
     for g, std in sh:
         print(f"{C('33', 'shadow')}  {C('1', g.keys)}  {g.tool}: {g.desc}")
         for x in std:
             print(f"    hides in-app macOS shortcut: {x.desc[:100]}  {C('2', '[' + x.scope + ']')}")
     if not cs and not sh:
         print("No conflicts found.")
+    else:
+        conflict_word = "conflict" if hard == 1 else "conflicts"
+        shadow_word = "shadow" if len(sh) == 1 else "shadows"
+        print(C("2", f"\n{hard} {conflict_word}, {len(sh)} {shadow_word} (shadows are informational)"))
     return hard
 
 
@@ -1824,23 +1857,38 @@ def doctor(items: list[Binding]) -> int:
         state = "n/a" if p is None else ("found  " if p.exists() else "missing")
         print(f"  {t:<10} {state}  {counts.get(t, 0):>3} bindings  {C('2', str(p) if p else '')}")
     for w in WARNINGS:
-        print(f"  {C('31', 'warning')}  {w}")
+        print(f"  {C('31', 'warning')}  {sanitize(w)}")
     slow = {k[5:]: v for k, v in LAST_TIMINGS.items() if v > 1.0}
     for name, sec in sorted(slow.items(), key=lambda kv: -kv[1]):
         print(f"  {C('33', 'slow')}     {name} took {sec:.1f}s")
-    ap_meta = DATA_DIR / APPLE_JSON
-    if ap_meta.exists():
-        m = json.loads(ap_meta.read_text()).get("meta", {})
+
+    unreadable = []
+
+    def data_meta(name: str) -> dict | None:
+        try:
+            m = json.loads((DATA_DIR / name).read_text()).get("meta", {})
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            unreadable.append(name)
+            print(f"  {C('31', 'warning')}  {name} is unreadable - run `kb --sync` to download it again")
+            return None
+        return m if isinstance(m, dict) else {}
+
+    if (DATA_DIR / APPLE_JSON).exists() and (m := data_meta(APPLE_JSON)) is not None:
         print(f"  {C('2', 'apple')}    {_meta_line(m, 'rows')}")
-    vm = DATA_DIR / VSC_JSON
-    if vm.exists():
-        m = json.loads(vm.read_text()).get("meta", {})
+    if (DATA_DIR / VSC_JSON).exists() and (m := data_meta(VSC_JSON)) is not None:
         inst = vscode_installed_version()
         print(f"  {C('2', 'vscode')}   {_meta_line(m, 'default rows')}  (installed VS Code {inst or 'not found'})")
     for w in WARNINGS_INFO:
-        print(f"  {C('2', 'note')}     {w}")
+        print(f"  {C('2', 'note')}     {sanitize(w)}")
     print("\nread-only: kb never writes to your configs.")
-    return 1 if WARNINGS else 0
+    return 1 if WARNINGS or unreadable else 0
+
+
+def preview_command(snap: Path) -> str:
+    script = Path(sys.argv[0]).resolve()
+    return " ".join(
+        [shlex.quote(sys.executable), shlex.quote(str(script)), "--detail", "{1}", "--snapshot", shlex.quote(str(snap))]
+    )
 
 
 def interactive(items: list[Binding]) -> None:
@@ -1857,7 +1905,6 @@ def interactive(items: list[Binding]) -> None:
         fd = os.open(snap, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump([asdict(b) for b in items], f)
-        exe = shlex.quote(str(Path(sys.argv[0]).resolve()))
         cmd = [
             fzf,
             "--ansi",
@@ -1872,14 +1919,14 @@ def interactive(items: list[Binding]) -> None:
             "--header",
             "type to search · e.g. alt t, tmux split · ctrl-/ preview",
             "--preview",
-            f"{sys.executable} {exe} --detail {{1}} --snapshot {shlex.quote(str(snap))}",
+            preview_command(snap),
             "--preview-window",
             "right:45%:wrap",
             "--bind",
             "ctrl-/:toggle-preview",
         ]
         subprocess.run(cmd, input="\n".join(lines), text=True, check=False)  # noqa: S603 - fzf argv built here, no shell
-    SETTINGS.color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    SETTINGS.color = want_color(sys.stdout)
 
 
 def show_detail(idx, snapshot):
@@ -1895,7 +1942,9 @@ def show_detail(idx, snapshot):
 def _tool_arg(value):
     tool = value.strip().lower()
     if tool not in known_tools():
-        raise argparse.ArgumentTypeError(f"unknown tool {value!r} (choose from: {', '.join(known_tools())})")
+        close = difflib.get_close_matches(tool, known_tools(), n=1)
+        hint = f" - did you mean {close[0]!r}?" if close else ""
+        raise argparse.ArgumentTypeError(f"unknown tool {value!r}{hint} (choose from: {', '.join(known_tools())})")
     return tool
 
 
@@ -1969,6 +2018,10 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("--detail needs --snapshot")
         show_detail(a.detail, a.snapshot)
         return 0
+    if a.key is not None and not a.key.strip():
+        ap.error("--key needs a key combo, e.g. -k opt+t")
+    if a.json and (a.conflicts or a.tools or a.doctor):
+        ap.error("--json is only supported for searches (not with --conflicts, --tools or --doctor)")
     if a.sync_apple or a.sync_vscode or a.sync:
         rc = 0
         for flag, fn, name in (
@@ -1982,7 +2035,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"fetched {m['rows']} rows from {m['source']}")
                 print(f"  sha256 {m['sha256'][:16]}…  saved to {DATA_DIR / name}")
             except Exception as e:
-                print(f"kb: sync of {name} failed: {e}", file=sys.stderr)
+                print(f"kb: sync of {name} failed: {sanitize(e)}", file=sys.stderr)
                 rc = 1
         return rc
     SETTINGS.include_unnamed = a.all_system
@@ -2024,6 +2077,8 @@ def run() -> None:
         code = main()
     except BrokenPipeError:
         code = 0
+        with contextlib.suppress(OSError, ValueError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())  # silence the flush at exit
     except KeyboardInterrupt:
         code = 130
     except SystemExit as e:

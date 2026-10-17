@@ -15,7 +15,7 @@ jobs:
         os: [macos-latest, ubuntu-latest]
         python: ["3.11", "3.13"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - uses: extractions/setup-just@v3
       - run: uv python install ${{ matrix.python }}

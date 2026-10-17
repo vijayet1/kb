@@ -10,11 +10,14 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
 import kb.cli as kb
+from kb import net
 
 # Tests must never touch the network: first-run downloads are opt-in per test (see AutoDownload).
 os.environ["KB_NO_AUTO_SYNC"] = "1"
@@ -992,6 +995,61 @@ class DataDirSafety(Sandbox):
         with self.assertRaises(OSError):
             kb._save_doc("t.json", "https://x", b"raw", [{"a": 1}], 1)
         self.assertEqual(victim.read_text(), "keep")
+
+
+class Fetch(unittest.TestCase):
+    def test_redirect_to_another_host_is_refused_before_following(self):
+        h = net.SameHostRedirect("example.com")
+        req = urllib.request.Request("https://example.com/a")
+        with self.assertRaises(ValueError):
+            h.redirect_request(req, None, 302, "Found", {}, "https://evil.example/b")
+        with self.assertRaises(ValueError):
+            h.redirect_request(req, None, 302, "Found", {}, "http://example.com/b")  # downgrade
+        ok = h.redirect_request(req, None, 302, "Found", {}, "https://example.com/b")
+        self.assertEqual(ok.full_url, "https://example.com/b")
+
+    def test_total_deadline_aborts_a_slow_drip(self):
+        class Slow:
+            def read(self, n):
+                time.sleep(0.05)
+                return b"x"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class Op:
+            def open(self, req, timeout=None):
+                return Slow()
+
+        with self.assertRaises(ValueError) as cm:
+            kb._fetch("https://example.com/", "example.com", timeout=0.2, opener=Op())
+        self.assertIn("deadline", str(cm.exception))
+
+    def test_size_cap_is_enforced_while_reading(self):
+        class Big:
+            def read(self, n):
+                return b"x" * n
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class Op:
+            def open(self, req, timeout=None):
+                return Big()
+
+        with self.assertRaises(ValueError):
+            kb._fetch("https://example.com/", "example.com", timeout=5, opener=Op())
+
+    def test_wrong_host_or_scheme_still_refused(self):
+        for url in ("http://example.com/", "https://evil.example/"):
+            with self.assertRaises(ValueError):
+                kb._fetch(url, "example.com")
 
 
 if __name__ == "__main__":

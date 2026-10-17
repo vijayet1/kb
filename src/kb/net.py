@@ -25,19 +25,42 @@ def write_private(path: Path, data: str) -> None:
         f.write(data)
 
 
-def fetch(url: str, host: str, *, timeout: float, max_bytes: int, user_agent: str) -> bytes:
-    """GET url over https from exactly `host`; bounded size/time; refuses redirects to other hosts."""
+class SameHostRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only if it stays on https and on the allowed host (checked before the next request)."""
+
+    def __init__(self, host: str):
+        self.host = host
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        u = urllib.parse.urlparse(newurl)
+        if u.scheme != "https" or u.hostname != self.host:
+            raise ValueError(f"refusing redirect to {newurl!r}: only https://{self.host}/ is allowed")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def fetch(url: str, host: str, *, timeout: float, max_bytes: int, user_agent: str, opener=None) -> bytes:
+    """GET url over https from exactly `host`; redirects stay on that host; bounded size and total time."""
     u = urllib.parse.urlparse(url)
     if u.scheme != "https" or u.hostname != host:
         raise ValueError(f"refusing to fetch {url!r}: only https://{host}/ is allowed")
+    if opener is None:
+        opener = urllib.request.build_opener(SameHostRedirect(host))
     req = urllib.request.Request(url, headers={"User-Agent": user_agent})  # noqa: S310 - https + exact host validated
-    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - same validated request
-        if urllib.parse.urlparse(r.geturl()).hostname != host:
-            raise ValueError(f"redirected away from {host}; aborting")
-        raw = r.read(max_bytes + 1)
-    if len(raw) > max_bytes:
-        raise ValueError("response too large")
-    return raw
+    deadline = time.monotonic() + timeout
+    chunks: list[bytes] = []
+    total = 0
+    with opener.open(req, timeout=timeout) as r:
+        while True:
+            if time.monotonic() > deadline:
+                raise ValueError(f"download from {host} exceeded its {timeout:g}s deadline")
+            chunk = r.read(min(65536, max_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError("response too large")
+    return b"".join(chunks)
 
 
 def save_doc(

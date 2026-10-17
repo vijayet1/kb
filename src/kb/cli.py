@@ -798,9 +798,14 @@ def parse_apple_html(html_text):
     return p.rows
 
 
-def _fetch(url: str, host: str, timeout: float = 20) -> bytes:
+def _fetch(url: str, host: str, timeout: float = 20, *, opener=None) -> bytes:
     return net.fetch(
-        url, host, timeout=timeout, max_bytes=APPLE_MAX_BYTES, user_agent=f"kb/{VERSION} (+local keybinding index)"
+        url,
+        host,
+        timeout=timeout,
+        max_bytes=APPLE_MAX_BYTES,
+        user_agent=f"kb/{VERSION} (+local keybinding index)",
+        opener=opener,
     )
 
 

@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -805,6 +806,46 @@ class AutoDownload(Sandbox):
         rows = [{"section": "s", "combo": "c", "desc": "d"}] * 60
         kb._save_doc(kb.APPLE_JSON, kb.APPLE_URL, b"raw", rows, 50)
         self.assertEqual(sorted(p.name for p in kb.DATA_DIR.iterdir()), [kb.APPLE_JSON])
+
+
+class ScriptingContract(Sandbox):
+    def run_main(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = kb.main(list(argv))
+            except SystemExit as e:
+                rc = e.code
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_empty_key_is_a_usage_error(self):
+        rc, out, err = self.run_main("-k", "  ", "--no-fzf")
+        self.assertEqual((rc, out), (2, ""))
+        self.assertIn("--key", err)
+
+    def test_json_with_unsupported_modes_fails_loudly(self):
+        for flag in ("-c", "--tools", "--doctor"):
+            rc, out, err = self.run_main("--json", flag)
+            self.assertEqual((rc, out), (2, ""), flag)
+            self.assertIn("--json", err)
+
+    def test_table_footer_goes_to_stderr(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            kb.print_table([kb.Binding("x", "⌘A", "do a"), kb.Binding("x", "⌘B", "do b")])
+        self.assertEqual(len(out.getvalue().splitlines()), 2)
+        self.assertIn("2 bindings", err.getvalue())
+
+    def test_unknown_tool_suggests_the_closest_name(self):
+        rc, _out, err = self.run_main("-t", "tmx")
+        self.assertEqual(rc, 2)
+        self.assertIn("did you mean 'tmux'", err)
+
+    def test_closed_pipe_is_silent(self):
+        code = "import kb.cli as k; k.main = lambda: print('x' * 200000) or 0; k.run()"
+        cmd = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)} | head -c 1 >/dev/null"
+        r = subprocess.run(["sh", "-c", cmd], check=False, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.stderr, "")
 
 
 if __name__ == "__main__":

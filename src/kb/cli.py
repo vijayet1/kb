@@ -14,6 +14,7 @@ kb --json            machine-readable output
 import argparse
 import contextlib
 import ctypes
+import difflib
 import hashlib
 import http.client
 import importlib.metadata
@@ -1782,7 +1783,7 @@ def print_table(items: list[Binding]) -> None:
     kw = min(max(len(b.keys) for b in items), 28)
     for b in items:
         print(row(b, kw))
-    print(C("2", f"\n{len(items)} binding{'s' if len(items) != 1 else ''}"))
+    print(C("2", f"{len(items)} binding{'s' if len(items) != 1 else ''}"), file=sys.stderr)
 
 
 def detail(b: Binding, items: list[Binding]) -> str:
@@ -1908,7 +1909,9 @@ def show_detail(idx, snapshot):
 def _tool_arg(value):
     tool = value.strip().lower()
     if tool not in known_tools():
-        raise argparse.ArgumentTypeError(f"unknown tool {value!r} (choose from: {', '.join(known_tools())})")
+        close = difflib.get_close_matches(tool, known_tools(), n=1)
+        hint = f" - did you mean {close[0]!r}?" if close else ""
+        raise argparse.ArgumentTypeError(f"unknown tool {value!r}{hint} (choose from: {', '.join(known_tools())})")
     return tool
 
 
@@ -1982,6 +1985,10 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("--detail needs --snapshot")
         show_detail(a.detail, a.snapshot)
         return 0
+    if a.key is not None and not a.key.strip():
+        ap.error("--key needs a key combo, e.g. -k opt+t")
+    if a.json and (a.conflicts or a.tools or a.doctor):
+        ap.error("--json is only supported for searches (not with --conflicts, --tools or --doctor)")
     if a.sync_apple or a.sync_vscode or a.sync:
         rc = 0
         for flag, fn, name in (
@@ -2037,6 +2044,8 @@ def run() -> None:
         code = main()
     except BrokenPipeError:
         code = 0
+        with contextlib.suppress(OSError, ValueError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())  # silence the flush at exit
     except KeyboardInterrupt:
         code = 130
     except SystemExit as e:

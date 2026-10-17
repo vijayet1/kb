@@ -37,7 +37,19 @@ class Sandbox(unittest.TestCase):
         kb.HOME, kb.CFG, kb.DARWIN = self.home, self.cfg, False
         kb.WARNINGS.clear()
 
+        def _no_net(*a, **k):
+            raise AssertionError("test attempted a real network request")
+
+        self._net = [
+            mock.patch.object(urllib.request.OpenerDirector, "open", _no_net),
+            mock.patch("urllib.request.urlopen", _no_net),
+        ]
+        for p in self._net:
+            p.start()
+
     def tearDown(self):
+        for p in self._net:
+            p.stop()
         kb.HOME, kb.CFG, kb.DARWIN = self.saved[:3]
         kb.WARNINGS[:] = self.saved[3]
         kb.DATA_DIR, kb.VSC_APP, kb.VSC_USER = self.saved[4:7]
@@ -985,6 +997,10 @@ class NetIsolation(unittest.TestCase):
 
 
 class DataDirSafety(Sandbox):
+    def test_sandbox_blocks_real_network(self):
+        with self.assertRaises(AssertionError):
+            urllib.request.urlopen("https://support.apple.com/")
+
     def test_relative_xdg_values_are_ignored(self):
         fb = Path("/home/u/.local/share")
         with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "rel/dir"}):

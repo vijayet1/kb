@@ -34,7 +34,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from . import net
-from .net import NETWORK_ERRORS
+from .net import NETWORK_ERRORS, xdg_dir
 
 try:
     import tomllib
@@ -60,7 +60,7 @@ def _version() -> str:
 VERSION = _version()
 SCHEMA_VERSION = 1
 HOME = Path.home()
-CFG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
+CFG = xdg_dir("XDG_CONFIG_HOME", HOME / ".config")
 DARWIN = sys.platform == "darwin"
 DEFAULTS_BIN = "/usr/bin/defaults"  # absolute: never resolve system tools through $PATH
 LOADER_BUDGET = float(os.environ.get("KB_LOADER_TIMEOUT", "10"))  # seconds any one source may take
@@ -668,7 +668,7 @@ SYSTEM_HOTKEY_NAMES = {
 APPLE_URL = "https://support.apple.com/en-us/102650"
 APPLE_HOST = "support.apple.com"
 APPLE_MAX_BYTES = 5_000_000
-DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share") / "kb"
+DATA_DIR = xdg_dir("XDG_DATA_HOME", HOME / ".local/share") / "kb"
 APPLE_JSON = "apple-shortcuts.json"
 AUTO_SYNC_TIMEOUT = 8  # seconds; first-run downloads must fit inside the per-source budget
 STANDARD_KEY_BINDING = Path("/System/Library/Frameworks/AppKit.framework/Resources/StandardKeyBinding.dict")

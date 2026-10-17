@@ -969,5 +969,30 @@ class NetIsolation(unittest.TestCase):
         self.assertTrue(callable(net.fetch) and callable(net.save_doc))
 
 
+class DataDirSafety(Sandbox):
+    def test_relative_xdg_values_are_ignored(self):
+        fb = Path("/home/u/.local/share")
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "rel/dir"}):
+            self.assertEqual(kb.xdg_dir("XDG_DATA_HOME", fb), fb)
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/abs/data"}):
+            self.assertEqual(kb.xdg_dir("XDG_DATA_HOME", fb), Path("/abs/data"))
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": ""}):
+            self.assertEqual(kb.xdg_dir("XDG_DATA_HOME", fb), fb)
+
+    def test_saved_data_is_private(self):
+        kb._save_doc("t.json", "https://x", b"raw", [{"a": 1}], 1)
+        self.assertEqual(oct((kb.DATA_DIR / "t.json").stat().st_mode & 0o777), "0o600")
+        self.assertEqual(oct(kb.DATA_DIR.stat().st_mode & 0o777), "0o700")
+
+    def test_write_refuses_a_symlinked_temp_file(self):
+        kb.DATA_DIR.mkdir(parents=True)
+        victim = self.home / "victim.txt"
+        victim.write_text("keep")
+        (kb.DATA_DIR / f"t.json.{os.getpid()}.tmp").symlink_to(victim)
+        with self.assertRaises(OSError):
+            kb._save_doc("t.json", "https://x", b"raw", [{"a": 1}], 1)
+        self.assertEqual(victim.read_text(), "keep")
+
+
 if __name__ == "__main__":
     unittest.main()

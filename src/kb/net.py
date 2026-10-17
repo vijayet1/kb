@@ -14,6 +14,17 @@ from pathlib import Path
 NETWORK_ERRORS: tuple[type[BaseException], ...] = (OSError, ValueError, http.client.HTTPException)
 
 
+def xdg_dir(var: str, fallback: Path) -> Path:
+    value = os.environ.get(var, "")
+    return Path(value) if value and Path(value).is_absolute() else fallback
+
+
+def write_private(path: Path, data: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(data)
+
+
 def fetch(url: str, host: str, *, timeout: float, max_bytes: int, user_agent: str) -> bytes:
     """GET url over https from exactly `host`; bounded size/time; refuses redirects to other hosts."""
     u = urllib.parse.urlparse(url)
@@ -53,8 +64,11 @@ def save_doc(
         },
         "rows": rows,
     }
-    data_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = data_dir / f"{name}.{os.getpid()}.tmp"  # unique per process: two kb runs may sync at once
-    tmp.write_text(json.dumps(doc, indent=1, ensure_ascii=False) + "\n")
-    tmp.replace(data_dir / name)
+    try:
+        write_private(tmp, json.dumps(doc, indent=1, ensure_ascii=False) + "\n")
+        tmp.replace(data_dir / name)
+    finally:
+        tmp.unlink(missing_ok=True)
     return doc

@@ -20,7 +20,6 @@ import kb.cli as kb
 from kb import net
 
 # Tests must never touch the network: first-run downloads are opt-in per test (see AutoDownload).
-os.environ["KB_NO_AUTO_SYNC"] = "1"
 
 
 class Sandbox(unittest.TestCase):
@@ -44,6 +43,7 @@ class Sandbox(unittest.TestCase):
             mock.patch.object(urllib.request.OpenerDirector, "open", _no_net),
             mock.patch("urllib.request.urlopen", _no_net),
         ]
+        self._net.append(mock.patch.dict(os.environ, {"KB_NO_AUTO_SYNC": "1"}))
         for p in self._net:
             p.start()
 

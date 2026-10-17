@@ -1872,6 +1872,13 @@ def doctor(items: list[Binding]) -> int:
     return 1 if WARNINGS else 0
 
 
+def preview_command(snap: Path) -> str:
+    script = Path(sys.argv[0]).resolve()
+    return " ".join(
+        [shlex.quote(sys.executable), shlex.quote(str(script)), "--detail", "{1}", "--snapshot", shlex.quote(str(snap))]
+    )
+
+
 def interactive(items: list[Binding]) -> None:
     fzf = shutil.which("fzf")
     if not fzf:
@@ -1886,7 +1893,6 @@ def interactive(items: list[Binding]) -> None:
         fd = os.open(snap, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump([asdict(b) for b in items], f)
-        exe = shlex.quote(str(Path(sys.argv[0]).resolve()))
         cmd = [
             fzf,
             "--ansi",
@@ -1901,7 +1907,7 @@ def interactive(items: list[Binding]) -> None:
             "--header",
             "type to search · e.g. alt t, tmux split · ctrl-/ preview",
             "--preview",
-            f"{sys.executable} {exe} --detail {{1}} --snapshot {shlex.quote(str(snap))}",
+            preview_command(snap),
             "--preview-window",
             "right:45%:wrap",
             "--bind",

@@ -885,5 +885,19 @@ class Colour(unittest.TestCase):
             self.assertFalse(kb.want_color(pipe))  # NO_COLOR wins
 
 
+class FzfPreview(unittest.TestCase):
+    def test_preview_command_quotes_interpreter_and_script(self):
+        with (
+            mock.patch.object(kb.sys, "executable", "/tmp/my dir/py;touch pwn"),
+            mock.patch.object(kb.sys, "argv", ["/tmp/my dir/kb"]),
+        ):
+            cmd = kb.preview_command(Path("/tmp/snap dir/s.json"))
+        parts = shlex.split(cmd)
+        self.assertEqual(parts[0], "/tmp/my dir/py;touch pwn")
+        self.assertEqual(parts[1], str(Path("/tmp/my dir/kb").resolve()))
+        self.assertEqual(parts[-1], "/tmp/snap dir/s.json")
+        self.assertIn("{1}", cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1815,12 +1815,18 @@ def report_conflicts(items: list[Binding]) -> int:
         print(f"{C('31', 'CONFLICT') if cross else C('33', 'duplicate')}  {C('1', pretty(norm))}  ({scope})")
         for b in bs:
             print(f"    {C(TOOL_COLOR.get(b.tool, '37'), f'{b.tool:<10}')} {b.desc}   {C('2', b.src)}")
+    if sh:
+        print(C("2", "shadow = a global tool captures this key before the app sees it (informational, not a failure)"))
     for g, std in sh:
         print(f"{C('33', 'shadow')}  {C('1', g.keys)}  {g.tool}: {g.desc}")
         for x in std:
             print(f"    hides in-app macOS shortcut: {x.desc[:100]}  {C('2', '[' + x.scope + ']')}")
     if not cs and not sh:
         print("No conflicts found.")
+    else:
+        conflict_word = "conflict" if hard == 1 else "conflicts"
+        shadow_word = "shadow" if len(sh) == 1 else "shadows"
+        print(C("2", f"\n{hard} {conflict_word}, {len(sh)} {shadow_word} (informational)"))
     return hard
 
 

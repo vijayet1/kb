@@ -818,6 +818,18 @@ class ScriptingContract(Sandbox):
                 rc = e.code
         return rc, out.getvalue(), err.getvalue()
 
+    def test_conflict_report_explains_shadows_and_summarises(self):
+        items = [
+            kb.Binding("aerospace", "⌥⇧←", "Join left", "alt+shift+left"),
+            kb.Binding("macos", "⌥⇧←", "Select word left", "alt+shift+left", "text"),
+        ]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            kb.report_conflicts(items)
+        text = out.getvalue()
+        self.assertIn("shadow = ", text)
+        self.assertRegex(text, r"\d+ conflicts?, \d+ shadows? \(informational\)")
+
     def test_empty_key_is_a_usage_error(self):
         rc, out, err = self.run_main("-k", "  ", "--no-fzf")
         self.assertEqual((rc, out), (2, ""))

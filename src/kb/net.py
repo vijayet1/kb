@@ -83,6 +83,8 @@ def save_doc(
             "sha256": hashlib.sha256(raw).hexdigest(),
             "kb_version": version,
             "rows": len(rows),
+            "schema": 1,
+            "rows_sha256": hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest(),
             **(extra or {}),
         },
         "rows": rows,

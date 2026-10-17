@@ -1052,5 +1052,26 @@ class Fetch(unittest.TestCase):
                 kb._fetch(url, "example.com")
 
 
+class DataValidation(Sandbox):
+    def put(self, name, text):
+        kb.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (kb.DATA_DIR / name).write_text(text)
+
+    def test_truncated_json_is_a_warning_not_a_crash(self):
+        self.put(kb.APPLE_JSON, '{"meta": {}, "rows": [')
+        self.assertEqual(kb.load_apple_docs(), [])
+        self.assertTrue(any("kb --sync" in w for w in kb.WARNINGS))
+
+    def test_rows_missing_fields_are_skipped_and_counted(self):
+        self.put(kb.APPLE_JSON, json.dumps({"meta": {}, "rows": [{"section": "x"}, "nope"]}))
+        self.assertEqual(kb.load_apple_docs(), [])
+        self.assertTrue(any("skipped" in w for w in kb.WARNINGS))
+
+    def test_saved_doc_records_schema_and_row_hash(self):
+        doc = kb._save_doc("t.json", "https://x", b"raw", [{"a": 1}], 1)
+        self.assertEqual(doc["meta"]["schema"], 1)
+        self.assertEqual(len(doc["meta"]["rows_sha256"]), 64)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -845,12 +845,36 @@ def ensure_data(name: str) -> Path | None:
     return path if path.exists() else None
 
 
-def load_apple_docs() -> list[Binding]:
-    p = ensure_data(APPLE_JSON)
+def read_doc(name: str, required: tuple[str, ...]) -> dict | None:
+    """Load a downloaded data file; on corruption warn (with the repair command) and return None."""
+    p = ensure_data(name)
     if p is None:
-        WARNINGS.append("apple docs unavailable - run `kb --sync-apple` when online to download Apple's shortcut list")
+        return None
+    try:
+        doc = json.loads(p.read_text())
+        rows = doc["rows"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        WARNINGS.append(f"{name} is unreadable ({type(e).__name__}) - run `kb --sync` to download it again")
+        return None
+    if not isinstance(rows, list):
+        WARNINGS.append(f"{name} is unreadable (rows is not a list) - run `kb --sync` to download it again")
+        return None
+    good = [r for r in rows if isinstance(r, dict) and all(isinstance(r.get(k), str) for k in required)]
+    if len(good) != len(rows):
+        WARNINGS.append(f"{name}: skipped {len(rows) - len(good)} malformed rows - run `kb --sync`")
+    doc["rows"] = good
+    return doc
+
+
+def load_apple_docs() -> list[Binding]:
+    before = len(WARNINGS)
+    doc = read_doc(APPLE_JSON, ("section", "combo", "desc"))
+    if doc is None:
+        if len(WARNINGS) == before:  # missing, not corrupt
+            WARNINGS.append(
+                "apple docs unavailable - run `kb --sync-apple` when online to download Apple's shortcut list"
+            )
         return []
-    doc = json.loads(p.read_text())
     meta = doc.get("meta", {})
     out: list[Binding] = []
     for row in doc.get("rows", []):
@@ -1355,7 +1379,8 @@ def _nls(ext_dir, value):
 
 def load_vscode() -> list[Binding]:
     out: list[Binding] = []
-    docs = ensure_data(VSC_JSON)
+    before = len(WARNINGS)
+    doc = read_doc(VSC_JSON, ("section", "title", "command", "osx"))
     meta = {}
     removed = set()  # (command, chord) pairs the user removed with a "-command" entry
     # 1) your own keybindings (default profile + named profiles)
@@ -1392,8 +1417,8 @@ def load_vscode() -> list[Binding]:
                 )
             )
     # 2) official defaults (synced from Microsoft's reference page)
-    if docs is not None:
-        d = json.loads(docs.read_text())
+    if doc is not None:
+        d = doc
         meta = d.get("meta", {})
         for r in d.get("rows", []):
             if not r.get("osx"):
@@ -1415,7 +1440,7 @@ def load_vscode() -> list[Binding]:
             if (r["command"], tuple(chord)) in removed:
                 b.note = "removed by your keybindings.json"
             out.append(b)
-    else:
+    elif len(WARNINGS) == before:  # missing, not corrupt
         WARNINGS.append("vscode defaults unavailable - run `kb --sync-vscode` when online to download them")
     return out
 

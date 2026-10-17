@@ -842,8 +842,8 @@ class ScriptingContract(Sandbox):
         self.assertIn("did you mean 'tmux'", err)
 
     def test_closed_pipe_is_silent(self):
-        code = "import kb.cli as k; k.main = lambda: print('x' * 200000) or 0; k.run()"
-        cmd = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)} | head -c 1 >/dev/null"
+        code = "import kb.cli as k; k.main = lambda: [print('x' * 80) for _ in range(5000)] and 0; k.run()"
+        cmd = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)} | head -n 1 >/dev/null"
         r = subprocess.run(["sh", "-c", cmd], check=False, capture_output=True, text=True, timeout=30)
         self.assertEqual(r.stderr, "")
 

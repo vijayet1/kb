@@ -1830,7 +1830,7 @@ def report_conflicts(items: list[Binding]) -> int:
     else:
         conflict_word = "conflict" if hard == 1 else "conflicts"
         shadow_word = "shadow" if len(sh) == 1 else "shadows"
-        print(C("2", f"\n{hard} {conflict_word}, {len(sh)} {shadow_word} (informational)"))
+        print(C("2", f"\n{hard} {conflict_word}, {len(sh)} {shadow_word} (shadows are informational)"))
     return hard
 
 
@@ -2035,7 +2035,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"fetched {m['rows']} rows from {m['source']}")
                 print(f"  sha256 {m['sha256'][:16]}…  saved to {DATA_DIR / name}")
             except Exception as e:
-                print(f"kb: sync of {name} failed: {e}", file=sys.stderr)
+                print(f"kb: sync of {name} failed: {sanitize(e)}", file=sys.stderr)
                 rc = 1
         return rc
     SETTINGS.include_unnamed = a.all_system

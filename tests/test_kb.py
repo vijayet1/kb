@@ -827,6 +827,17 @@ class AutoDownload(Sandbox):
             kb.load_all(tools=["tmux"])
         self.assertEqual(self.synced, [])
 
+    def test_sync_failure_text_is_sanitised(self):
+        def boom(timeout=20):
+            raise ValueError("bad \x1b[31m thing")
+
+        kb.sync_apple = boom
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            kb.main(["--sync-apple"])
+        self.assertIn("sync of", err.getvalue())
+        self.assertNotIn("\x1b", err.getvalue())
+
     def test_save_leaves_no_temp_files_behind(self):
         rows = [{"section": "s", "combo": "c", "desc": "d"}] * 60
         kb._save_doc(kb.APPLE_JSON, kb.APPLE_URL, b"raw", rows, 50)
@@ -853,7 +864,7 @@ class ScriptingContract(Sandbox):
             kb.report_conflicts(items)
         text = out.getvalue()
         self.assertIn("shadow = ", text)
-        self.assertRegex(text, r"\d+ conflicts?, \d+ shadows? \(informational\)")
+        self.assertIn("0 conflicts, 1 shadow (shadows are informational)", text)
 
     def test_empty_key_is_a_usage_error(self):
         rc, out, err = self.run_main("-k", "  ", "--no-fzf")
@@ -1033,6 +1044,11 @@ class Fetch(unittest.TestCase):
         ok = h.redirect_request(req, None, 302, "Found", {}, "https://example.com/b")
         self.assertEqual(ok.full_url, "https://example.com/b")
 
+    def test_default_opener_uses_same_host_redirect_only(self):
+        handlers = urllib.request.build_opener(net.SameHostRedirect("x")).handlers
+        self.assertTrue(any(isinstance(h, net.SameHostRedirect) for h in handlers))
+        self.assertFalse(any(type(h) is urllib.request.HTTPRedirectHandler for h in handlers))
+
     def test_total_deadline_aborts_a_slow_drip(self):
         class Slow:
             def read(self, n):
@@ -1120,9 +1136,9 @@ class DataValidation(Sandbox):
             self.assertIn("kb --sync", kb.WARNINGS[0])
 
     def test_non_dict_meta_is_coerced(self):
-        row = {"section": "Documents", "combo": "Command-C", "desc": "Copy"}
+        row = {"section": "Cut, Copy, Paste", "combo": "Command-C", "desc": "Copy"}
         self.put(kb.APPLE_JSON, json.dumps({"meta": 5, "rows": [row]}))
-        kb.load_apple_docs()
+        self.assertEqual(len(kb.load_apple_docs()), 1)
         self.assertEqual(kb.WARNINGS, [])
 
     def test_doctor_survives_corrupt_data_files(self):

@@ -39,7 +39,11 @@ class SameHostRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def fetch(url: str, host: str, *, timeout: float, max_bytes: int, user_agent: str, opener=None) -> bytes:
-    """GET url over https from exactly `host`; redirects stay on that host; bounded size and total time."""
+    """GET url over https from exactly `host`; redirects stay on that host; bounded size and total time.
+
+    The total deadline is checked between chunks and each socket operation is bounded by `timeout`, so the worst
+    case is a small multiple of `timeout`.
+    """
     u = urllib.parse.urlparse(url)
     if u.scheme != "https" or u.hostname != host:
         raise ValueError(f"refusing to fetch {url!r}: only https://{host}/ is allowed")

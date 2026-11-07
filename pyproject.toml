@@ -29,7 +29,7 @@ source-exclude = ["**/.mypy_cache/**", "**/.ruff_cache/**", "**/__pycache__/**"]
 wheel-exclude = ["**/.mypy_cache/**", "**/.ruff_cache/**", "**/__pycache__/**"]
 
 [dependency-groups]
-dev = ["ruff>=0.17", "mypy>=1.13"]
+dev = ["ruff>=0.17", "mypy>=2.4.1"]
 
 [tool.ruff]
 line-length = 120
